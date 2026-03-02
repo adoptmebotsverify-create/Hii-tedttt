@@ -1,0 +1,1105 @@
+-- Rain Pet GUI - WITH KEEP ALL PETS BUTTON
+-- Now you can press a button to instantly redeem all fallen pets
+
+local Players = game:GetService('Players')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local RunService = game:GetService('RunService')
+local UserInputService = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local HttpService = game:GetService('HttpService')
+local Debris = game:GetService('Debris')
+local Lighting = game:GetService('Lighting')
+
+-- Set thread identity for proper access
+pcall(function()
+    setthreadidentity(2)
+end)
+
+local LocalPlayer = Players.LocalPlayer
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Load modules from the first script
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+local LoadModule = Fsys.load
+
+local ClientData = LoadModule("ClientData")
+local InventoryDB = LoadModule("InventoryDB")
+local KindDB = LoadModule("KindDB")
+local DownloadClient = LoadModule("DownloadClient")
+local PetRigs = LoadModule("new:PetRigs")
+local RouterClient = LoadModule("RouterClient")
+local UIManager = LoadModule("UIManager")
+
+-- Make InventoryDB global
+_G.InventoryDB = InventoryDB
+
+-- ==============================================
+-- BYPASS EQUIP SYSTEM
+-- ==============================================
+
+local OriginalRouterGet = RouterClient.get
+local SpawnedPets = {}
+local EquippedPet = nil
+
+-- Pet Model Cache
+local PetModelCache = {}
+
+local function FetchPetModel(petKind)
+    if PetModelCache[petKind] then
+        return PetModelCache[petKind]:Clone()
+    end
+    local success, model = pcall(function()
+        return DownloadClient.promise_download_copy("Pets", petKind):expect()
+    end)
+    if success and model then
+        PetModelCache[petKind] = model
+        return model:Clone()
+    end
+    return nil
+end
+
+local function GenerateUniqueID()
+    return HttpService:GenerateGUID(false)
+end
+
+local function GenerateUniquePetName()
+    local prefixes = {"★", "☆", "♡", "☁️", "✨", "🍓", "🌸", "🍯", "☕", "🌙", "🌈", "❄️", "🫧", "🍬", "🍪", "🥛"}
+    local names = {"Shadow", "Blaze", "Frost", "Thunder", "Moon", "Star", "Sky", "Ocean", "River", "Storm"}
+    
+    local usePrefix = math.random(1, 3) == 1
+    local name = names[math.random(1, #names)]
+    
+    if usePrefix then
+        return prefixes[math.random(1, #prefixes)] .. name
+    else
+        return name .. " " .. prefixes[math.random(1, #prefixes)]
+    end
+end
+
+-- Newness groups
+local NewnessGroups = {
+    mega_neon_flyable_rideable = 990000,
+    neon_flyable_rideable = 950000,
+    flyable_rideable = 910000,
+    regular = 880000
+}
+
+local function GetPropertyGroup(properties)
+    local isMega = properties.mega_neon or false
+    local isNeon = properties.neon or false
+    local canFly = properties.flyable or false
+    local canRide = properties.rideable or false
+
+    if isMega then
+        return "mega_neon_flyable_rideable"
+    elseif isNeon then
+        return "neon_flyable_rideable"
+    else
+        return "flyable_rideable"
+    end
+end
+
+-- Update ClientData function
+local function UpdateClientData(dataPath, modifier)
+    local identity = get_thread_identity and get_thread_identity() or 8
+    set_thread_identity(2)
+    local currentData = ClientData.get(dataPath)
+    local clonedData = table.clone(currentData)
+    local result = modifier(clonedData)
+    ClientData.predict(dataPath, result)
+    set_thread_identity(identity)
+    return result
+end
+
+local function FindInTable(array, checker)
+    for index, value in pairs(array) do
+        if checker(value, index) then
+            return index
+        end
+    end
+    return nil
+end
+
+-- Register/Remove functions
+local function RegisterPetWrapper(wrapperData)
+    UpdateClientData("pet_char_wrappers", function(wrappers)
+        wrapperData.unique = #wrappers + 1
+        wrapperData.index = #wrappers + 1
+        wrappers[#wrappers + 1] = wrapperData
+        return wrappers
+    end)
+end
+
+local function RegisterPetState(stateManager)
+    UpdateClientData("pet_state_managers", function(managers)
+        managers[#managers + 1] = stateManager
+        return managers
+    end)
+end
+
+local function RemovePetWrapper(petUniqueId)
+    UpdateClientData("pet_char_wrappers", function(wrappers)
+        local wrapperIndex = FindInTable(wrappers, function(w)
+            return w.pet_unique == petUniqueId
+        end)
+        if wrapperIndex then
+            table.remove(wrappers, wrapperIndex)
+            for i = wrapperIndex, #wrappers do
+                wrappers[i].unique = i
+                wrappers[i].index = i
+            end
+        end
+        return wrappers
+    end)
+end
+
+local function RemovePetState(petUniqueId)
+    local pet = SpawnedPets[petUniqueId]
+    if not pet or not pet.model then return end
+
+    UpdateClientData("pet_state_managers", function(managers)
+        local managerIndex = FindInTable(managers, function(m)
+            return m.char == pet.model
+        end)
+        if managerIndex then
+            table.remove(managers, managerIndex)
+        end
+        return managers
+    end)
+end
+
+-- Unequip pet
+local function UnequipPet(petData)
+    local pet = SpawnedPets[petData.unique]
+    if not pet or not pet.model then return end
+
+    RemovePetWrapper(petData.unique)
+    RemovePetState(petData.unique)
+    pet.model:Destroy()
+    pet.model = nil
+
+    if EquippedPet and EquippedPet.unique == petData.unique then
+        EquippedPet = nil
+    end
+end
+
+-- Equip pet
+local function EquipPet(petData)
+    if petData.category ~= "pets" then return end
+
+    if EquippedPet then
+        UnequipPet(EquippedPet)
+    end
+
+    for _, wrapper in pairs(ClientData.get("pet_char_wrappers")) do
+        if wrapper.controller == LocalPlayer then
+            RouterClient.get("ToolAPI/Unequip"):InvokeServer(wrapper.pet_unique)
+        end
+    end
+
+    if not SpawnedPets[petData.unique] then
+        SpawnedPets[petData.unique] = { data = petData, model = nil }
+    end
+
+    local petModel = FetchPetModel(petData.kind)
+    if not petModel then return end
+    
+    petModel.Parent = workspace
+    SpawnedPets[petData.unique].model = petModel
+
+    EquippedPet = petData
+
+    task.defer(function()
+        RegisterPetWrapper({
+            char = petModel,
+            mega_neon = petData.properties.mega_neon or false,
+            neon = petData.properties.neon or false,
+            player = LocalPlayer,
+            entity_controller = LocalPlayer,
+            controller = LocalPlayer,
+            rp_name = petData.properties.rp_name or "",
+            pet_trick_level = petData.properties.pet_trick_level or 0,
+            pet_unique = petData.unique,
+            pet_id = petData.id,
+            location = {
+                full_destination_id = "housing",
+                destination_id = "housing",
+                house_owner = LocalPlayer
+            },
+            pet_progression = {
+                age = petData.properties.age or math.random(1, 6),
+                percentage = math.random(0, 99) / 100
+            },
+            are_colors_sealed = false,
+            is_pet = true,
+            friendship_level = petData.properties.friendship_level or 1
+        })
+
+        RegisterPetState({
+            char = petModel,
+            player = LocalPlayer,
+            store_key = "pet_state_managers",
+            is_sitting = false,
+            chars_connected_to_me = {},
+            states = {}
+        })
+    end)
+end
+
+-- ==============================================
+-- BYPASS ROUTER CLIENT
+-- ==============================================
+
+function RouterClient.get(endpoint)
+    if endpoint == "ToolAPI/Equip" then
+        return {
+            InvokeServer = function(_, uniqueId)
+                local pet = SpawnedPets[uniqueId]
+                if not pet then
+                    return OriginalRouterGet("ToolAPI/Equip"):InvokeServer(uniqueId)
+                end
+                EquipPet(pet.data)
+                return true, { action = "equip", is_server = true }
+            end
+        }
+    elseif endpoint == "ToolAPI/Unequip" then
+        return {
+            InvokeServer = function(_, uniqueId)
+                local pet = SpawnedPets[uniqueId]
+                if not pet then
+                    return OriginalRouterGet("ToolAPI/Unequip"):InvokeServer(uniqueId)
+                end
+                UnequipPet(pet.data)
+                return true, { action = "unequip", is_server = true }
+            end
+        }
+    else
+        return OriginalRouterGet(endpoint)
+    end
+end
+
+-- ==============================================
+-- CREATE INVENTORY ITEM
+-- ==============================================
+
+local NextToyOrder = 60000
+local SpawnedItems = {}
+local RedeemablePets = {} -- Track pets that can be redeemed
+
+local function CreateInventoryItem(itemId, category, properties)
+    local uniqueId = GenerateUniqueID()
+    local itemKindData = KindDB[itemId]
+
+    if not itemKindData then
+        warn("Item not found: " .. itemId)
+        return nil
+    end
+
+    properties = properties or {}
+    local newnessValue = NextToyOrder
+
+    if category == "pets" then
+        local groupKey = GetPropertyGroup(properties)
+        NewnessGroups[groupKey] = NewnessGroups[groupKey] - 1
+        newnessValue = NewnessGroups[groupKey]
+
+        if not properties.ailments_completed then
+            properties.ailments_completed = 0
+        end
+
+        if not properties.rp_name or properties.rp_name == "" then
+            properties.rp_name = GenerateUniquePetName()
+        end
+        
+        if properties.mega_neon and not properties.friendship_level then
+            properties.friendship_level = math.random(1, 5)
+        end
+    else
+        NextToyOrder = NextToyOrder - 1
+        newnessValue = NextToyOrder
+    end
+
+    local itemData = {
+        unique = uniqueId,
+        category = category,
+        id = itemId,
+        kind = itemKindData.kind,
+        newness_order = newnessValue,
+        properties = properties,
+        _source = "rain_pet",
+        isRedeemable = true -- Mark as redeemable
+    }
+
+    if category == "pets" then
+        SpawnedPets[uniqueId] = { data = itemData, model = nil }
+    end
+    
+    SpawnedItems[uniqueId] = true
+
+    return itemData
+end
+
+-- ==============================================
+-- REDEEM PET FUNCTION
+-- ==============================================
+
+local function RedeemPet(petData, petModel)
+    if not petData or not petModel then return false end
+    
+    -- Add to inventory
+    local identity = get_thread_identity and get_thread_identity() or 8
+    set_thread_identity(2)
+    local inventory = ClientData.get("inventory")
+    if inventory and inventory.pets then
+        inventory.pets[petData.unique] = petData
+        print("✅ Pet redeemed: " .. (petData.properties.rp_name or "Unknown"))
+    end
+    set_thread_identity(identity)
+    
+    -- Remove the physical pet with fade effect
+    if petModel and petModel.Parent then
+        -- Fade out effect
+        for _, part in pairs(petModel:GetDescendants()) do
+            if part:IsA("BasePart") then
+                TweenService:Create(part, TweenInfo.new(0.5), {Transparency = 1}):Play()
+            end
+        end
+        task.wait(0.5)
+        petModel:Destroy()
+    end
+    
+    -- Remove from redeemable pets table
+    for i, redeemable in ipairs(RedeemablePets) do
+        if redeemable.petData.unique == petData.unique then
+            table.remove(RedeemablePets, i)
+            break
+        end
+    end
+    
+    -- Remove from spawned pets table
+    SpawnedPets[petData.unique] = nil
+    
+    -- Refresh backpack
+    task.defer(function()
+        if UIManager and UIManager.apps and UIManager.apps.BackpackApp then
+            UIManager.apps.BackpackApp:refresh_rendered_items()
+        end
+    end)
+    
+    return true
+end
+
+-- ==============================================
+-- KEEP ALL PETS FUNCTION
+-- ==============================================
+
+local function keepAllPets()
+    local count = #RedeemablePets
+    if count == 0 then
+        statusLabel.Text = "No pets to keep!"
+        task.wait(1)
+        statusLabel.Text = "Ready"
+        return
+    end
+    
+    statusLabel.Text = "Keeping " .. count .. " pets..."
+    local kept = 0
+    
+    -- Make a copy of the table to avoid modification during iteration
+    local petsToKeep = {}
+    for i, redeemable in ipairs(RedeemablePets) do
+        table.insert(petsToKeep, redeemable)
+    end
+    
+    -- Redeem each pet
+    for i, redeemable in ipairs(petsToKeep) do
+        local success = pcall(function()
+            RedeemPet(redeemable.petData, redeemable.petModel)
+            kept = kept + 1
+            statusLabel.Text = "Keeping " .. kept .. "/" .. count .. " pets..."
+        end)
+        
+        if not success then
+            warn("Failed to keep pet")
+        end
+        
+        task.wait(0.1) -- Small delay between redemptions
+    end
+    
+    statusLabel.Text = "Kept " .. kept .. " pets!"
+    task.wait(2)
+    statusLabel.Text = "Ready"
+end
+
+-- ==============================================
+-- PROXIMITY PROMPT SYSTEM
+-- ==============================================
+
+-- Track active prompts
+local activePrompts = {}
+
+-- Create a proximity prompt for a pet
+local function createProximityPrompt(petModel, petData)
+    if not petModel or not petData then return end
+    
+    -- Create a part for the prompt to attach to
+    local promptPart = Instance.new("Part")
+    promptPart.Size = Vector3.new(4, 4, 4)
+    promptPart.Transparency = 1
+    promptPart.Anchored = false
+    promptPart.CanCollide = false
+    promptPart.Parent = petModel
+    
+    -- Position it near the pet
+    if petModel.PrimaryPart then
+        promptPart.CFrame = petModel.PrimaryPart.CFrame * CFrame.new(0, 2, 0)
+    end
+    
+    -- Create the proximity prompt
+    local prompt = Instance.new("ProximityPrompt")
+    prompt.Name = "RedeemPet_" .. petData.unique
+    prompt.ObjectText = "Redeem Pet"
+    prompt.ActionText = "Press E to redeem"
+    prompt.HoldDuration = 0
+    prompt.Enabled = true
+    prompt.MaxActivationDistance = 10
+    prompt.Parent = promptPart
+    
+    -- Store in active prompts
+    activePrompts[petData.unique] = {
+        prompt = prompt,
+        part = promptPart,
+        petData = petData,
+        petModel = petModel
+    }
+    
+    -- Connect to trigger event
+    prompt.Triggered:Connect(function(player)
+        if player == LocalPlayer then
+            -- Redeem the pet
+            local success = RedeemPet(petData, petModel)
+            if success then
+                -- Clean up prompt
+                if activePrompts[petData.unique] then
+                    prompt:Destroy()
+                    promptPart:Destroy()
+                    activePrompts[petData.unique] = nil
+                end
+            end
+        end
+    end)
+    
+    return prompt
+end
+
+-- ==============================================
+-- COLLECT ALL PETS
+-- ==============================================
+
+local AllPets = {}
+for id, info in pairs(InventoryDB.pets) do
+    if info.name then
+        table.insert(AllPets, {
+            id = id,
+            name = info.name,
+            kind = info.kind
+        })
+    end
+end
+
+print("✅ Loaded " .. #AllPets .. " pets from InventoryDB")
+
+-- ==============================================
+-- GUI WITH KEEP ALL BUTTON
+-- ==============================================
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RainPetGUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+-- Main frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 350, 0, 500) -- Made taller for keep all button
+mainFrame.Position = UDim2.new(0.5, -175, 0.5, -250)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = mainFrame
+
+-- Title
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+title.Text = "☔ PET RAIN ☔"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 20
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Parent = mainFrame
+Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -35, 0, 5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 16
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Parent = title
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Instructions for proximity prompt
+local promptInfo = Instance.new("TextLabel")
+promptInfo.Size = UDim2.new(1, -20, 0, 20)
+promptInfo.Position = UDim2.new(0, 10, 0, 45)
+promptInfo.BackgroundTransparency = 1
+promptInfo.Text = "👆 Walk up to pets and press E to redeem!"
+promptInfo.Font = Enum.Font.Gotham
+promptInfo.TextSize = 11
+promptInfo.TextColor3 = Color3.fromRGB(255, 255, 0)
+promptInfo.Parent = mainFrame
+
+-- Instructions
+local instLabel = Instance.new("TextLabel")
+instLabel.Size = UDim2.new(1, -20, 0, 20)
+instLabel.Position = UDim2.new(0, 10, 0, 65)
+instLabel.BackgroundTransparency = 1
+instLabel.Text = "Select pet type:"
+instLabel.Font = Enum.Font.Gotham
+instLabel.TextSize = 14
+instLabel.TextXAlignment = Enum.TextXAlignment.Left
+instLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+instLabel.Parent = mainFrame
+
+-- Button frame
+local buttonFrame = Instance.new("Frame")
+buttonFrame.Size = UDim2.new(1, -20, 0, 40)
+buttonFrame.Position = UDim2.new(0, 10, 0, 85)
+buttonFrame.BackgroundTransparency = 1
+buttonFrame.Parent = mainFrame
+
+-- FR Button
+local frBtn = Instance.new("TextButton")
+frBtn.Size = UDim2.new(0.3, -2, 1, 0)
+frBtn.Position = UDim2.new(0, 0, 0, 0)
+frBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+frBtn.Text = "🪽 FR"
+frBtn.Font = Enum.Font.GothamBold
+frBtn.TextSize = 16
+frBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+frBtn.Parent = buttonFrame
+Instance.new("UICorner", frBtn).CornerRadius = UDim.new(0, 6)
+
+-- NFR Button
+local nfrBtn = Instance.new("TextButton")
+nfrBtn.Size = UDim2.new(0.3, -2, 1, 0)
+nfrBtn.Position = UDim2.new(0.35, 0, 0, 0)
+nfrBtn.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+nfrBtn.Text = "🌟 NFR"
+nfrBtn.Font = Enum.Font.GothamBold
+nfrBtn.TextSize = 16
+nfrBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+nfrBtn.Parent = buttonFrame
+Instance.new("UICorner", nfrBtn).CornerRadius = UDim.new(0, 6)
+
+-- MFR Button
+local mfrBtn = Instance.new("TextButton")
+mfrBtn.Size = UDim2.new(0.3, -2, 1, 0)
+mfrBtn.Position = UDim2.new(0.7, 0, 0, 0)
+mfrBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 255)
+mfrBtn.Text = "🌈 MFR"
+mfrBtn.Font = Enum.Font.GothamBold
+mfrBtn.TextSize = 16
+mfrBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+mfrBtn.Parent = buttonFrame
+Instance.new("UICorner", mfrBtn).CornerRadius = UDim.new(0, 6)
+
+-- Selected pet type indicator
+local selectedType = "fr" -- fr, nfr, mfr
+local selectedLabel = Instance.new("TextLabel")
+selectedLabel.Size = UDim2.new(1, -20, 0, 20)
+selectedLabel.Position = UDim2.new(0, 10, 0, 130)
+selectedLabel.BackgroundTransparency = 1
+selectedLabel.Text = "Selected: FR (Fly + Ride)"
+selectedLabel.Font = Enum.Font.Gotham
+selectedLabel.TextSize = 12
+selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+selectedLabel.TextColor3 = Color3.fromRGB(0, 150, 255)
+selectedLabel.Parent = mainFrame
+
+-- Update selection function
+local function updateSelection(type)
+    selectedType = type
+    if type == "fr" then
+        selectedLabel.Text = "Selected: FR (Fly + Ride)"
+        selectedLabel.TextColor3 = Color3.fromRGB(0, 150, 255)
+    elseif type == "nfr" then
+        selectedLabel.Text = "Selected: NFR (Neon + Fly + Ride)"
+        selectedLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+    elseif type == "mfr" then
+        selectedLabel.Text = "Selected: MFR (Mega Neon + Fly + Ride)"
+        selectedLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+    end
+end
+
+frBtn.MouseButton1Click:Connect(function() updateSelection("fr") end)
+nfrBtn.MouseButton1Click:Connect(function() updateSelection("nfr") end)
+mfrBtn.MouseButton1Click:Connect(function() updateSelection("mfr") end)
+
+-- Pet count slider
+local countLabel = Instance.new("TextLabel")
+countLabel.Size = UDim2.new(1, -20, 0, 20)
+countLabel.Position = UDim2.new(0, 10, 0, 155)
+countLabel.BackgroundTransparency = 1
+countLabel.Text = "Number of Pets: 10"
+countLabel.Font = Enum.Font.Gotham
+countLabel.TextSize = 12
+countLabel.TextXAlignment = Enum.TextXAlignment.Left
+countLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+countLabel.Parent = mainFrame
+
+local countSlider = Instance.new("Frame")
+countSlider.Size = UDim2.new(1, -20, 0, 6)
+countSlider.Position = UDim2.new(0, 10, 0, 180)
+countSlider.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+countSlider.Parent = mainFrame
+Instance.new("UICorner", countSlider).CornerRadius = UDim.new(1, 0)
+
+local countFill = Instance.new("Frame")
+countFill.Size = UDim2.new(0.2, 0, 1, 0)
+countFill.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+countFill.Parent = countSlider
+Instance.new("UICorner", countFill).CornerRadius = UDim.new(1, 0)
+
+local countButton = Instance.new("TextButton")
+countButton.Size = UDim2.new(0, 16, 0, 16)
+countButton.Position = UDim2.new(0.2, -8, 0.5, -8)
+countButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+countButton.Text = ""
+countButton.Parent = countSlider
+Instance.new("UICorner", countButton).CornerRadius = UDim.new(1, 0)
+
+-- Speed slider
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(1, -20, 0, 20)
+speedLabel.Position = UDim2.new(0, 10, 0, 200)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = "Speed: 5"
+speedLabel.Font = Enum.Font.Gotham
+speedLabel.TextSize = 12
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+speedLabel.Parent = mainFrame
+
+local speedSlider = Instance.new("Frame")
+speedSlider.Size = UDim2.new(1, -20, 0, 6)
+speedSlider.Position = UDim2.new(0, 10, 0, 225)
+speedSlider.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+speedSlider.Parent = mainFrame
+Instance.new("UICorner", speedSlider).CornerRadius = UDim.new(1, 0)
+
+local speedFill = Instance.new("Frame")
+speedFill.Size = UDim2.new(0.5, 0, 1, 0)
+speedFill.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+speedFill.Parent = speedSlider
+Instance.new("UICorner", speedFill).CornerRadius = UDim.new(1, 0)
+
+local speedButton = Instance.new("TextButton")
+speedButton.Size = UDim2.new(0, 16, 0, 16)
+speedButton.Position = UDim2.new(0.5, -8, 0.5, -8)
+speedButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+speedButton.Text = ""
+speedButton.Parent = speedSlider
+Instance.new("UICorner", speedButton).CornerRadius = UDim.new(1, 0)
+
+-- Rain button
+local rainButton = Instance.new("TextButton")
+rainButton.Size = UDim2.new(1, -20, 0, 40)
+rainButton.Position = UDim2.new(0, 10, 0, 255)
+rainButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+rainButton.Text = "☔ MAKE IT RAIN ☔"
+rainButton.Font = Enum.Font.GothamBold
+rainButton.TextSize = 16
+rainButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+rainButton.Parent = mainFrame
+Instance.new("UICorner", rainButton).CornerRadius = UDim.new(0, 8)
+
+-- KEEP ALL BUTTON
+local keepAllButton = Instance.new("TextButton")
+keepAllButton.Size = UDim2.new(1, -20, 0, 40)
+keepAllButton.Position = UDim2.new(0, 10, 0, 300)
+keepAllButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+keepAllButton.Text = "💾 KEEP ALL PETS 💾"
+keepAllButton.Font = Enum.Font.GothamBold
+keepAllButton.TextSize = 16
+keepAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+keepAllButton.Parent = mainFrame
+Instance.new("UICorner", keepAllButton).CornerRadius = UDim.new(0, 8)
+
+-- Status label
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 25)
+statusLabel.Position = UDim2.new(0, 10, 0, 350)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Ready"
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 12
+statusLabel.TextColor3 = Color3.fromRGB(180, 180, 220)
+statusLabel.Parent = mainFrame
+
+-- Pet counter
+local petCounterLabel = Instance.new("TextLabel")
+petCounterLabel.Size = UDim2.new(1, -20, 0, 20)
+petCounterLabel.Position = UDim2.new(0, 10, 0, 380)
+petCounterLabel.BackgroundTransparency = 1
+petCounterLabel.Text = "Pets on ground: 0"
+petCounterLabel.Font = Enum.Font.Gotham
+petCounterLabel.TextSize = 11
+petCounterLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+petCounterLabel.Parent = mainFrame
+
+-- Redemption info
+local redeemInfo = Instance.new("TextLabel")
+redeemInfo.Size = UDim2.new(1, -20, 0, 25)
+redeemInfo.Position = UDim2.new(0, 10, 0, 405)
+redeemInfo.BackgroundTransparency = 1
+redeemInfo.Text = "👆 Press KEEP ALL to instantly collect all pets!"
+redeemInfo.Font = Enum.Font.Gotham
+redeemInfo.TextSize = 11
+redeemInfo.TextColor3 = Color3.fromRGB(255, 255, 0)
+redeemInfo.Parent = mainFrame
+
+-- ==============================================
+-- SLIDER DRAGGING
+-- ==============================================
+
+local draggingSlider = nil
+local petCount = 10
+local speedValue = 5
+
+countButton.MouseButton1Down:Connect(function()
+    draggingSlider = countSlider
+end)
+
+speedButton.MouseButton1Down:Connect(function()
+    draggingSlider = speedSlider
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local pos = input.Position.X
+        local absPos = draggingSlider.AbsolutePosition.X
+        local size = draggingSlider.AbsoluteSize.X
+        local percent = math.clamp((pos - absPos) / size, 0, 1)
+        
+        if draggingSlider == countSlider then
+            countFill.Size = UDim2.new(percent, 0, 1, 0)
+            countButton.Position = UDim2.new(percent, -8, 0.5, -8)
+            petCount = math.floor(1 + percent * 49)
+            countLabel.Text = "Number of Pets: " .. petCount
+        elseif draggingSlider == speedSlider then
+            speedFill.Size = UDim2.new(percent, 0, 1, 0)
+            speedButton.Position = UDim2.new(percent, -8, 0.5, -8)
+            speedValue = 1 + percent * 9
+            speedValue = math.floor(speedValue * 10) / 10
+            speedLabel.Text = "Speed: " .. speedValue
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingSlider = nil
+    end
+end)
+
+-- ==============================================
+-- RAIN PET FUNCTION - WITH REDEEMABLE TRACKING
+-- ==============================================
+
+local activePets = {}
+local isRaining = false
+
+local function createRainPet()
+    if #AllPets == 0 then return nil end
+    
+    local petData = AllPets[math.random(1, #AllPets)]
+    
+    -- Create properties based on selected type
+    local properties = {
+        pet_trick_level = 5,
+        age = math.random(1, 6),
+        ailments_completed = 0,
+        rp_name = GenerateUniquePetName(),
+        flyable = true,
+        rideable = true,
+        mega_neon = (selectedType == "mfr"),
+        neon = (selectedType == "nfr")
+    }
+    
+    if selectedType == "mfr" then
+        properties.friendship_level = math.random(1, 5)
+    end
+    
+    -- Create inventory item (not added to inventory yet)
+    local item = CreateInventoryItem(petData.id, "pets", properties)
+    if not item then return nil end
+    
+    -- Load pet model
+    local model = FetchPetModel(petData.kind)
+    
+    if not model then
+        -- Fallback model
+        model = Instance.new("Model")
+        model.Name = petData.name
+        
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(2, 2, 2)
+        part.Anchored = false
+        part.CanCollide = false
+        
+        -- Color based on type
+        if selectedType == "mfr" then
+            part.BrickColor = BrickColor.new("Really red")
+            part.Material = Enum.Material.Neon
+        elseif selectedType == "nfr" then
+            part.BrickColor = BrickColor.new("Bright green")
+            part.Material = Enum.Material.Neon
+        else -- fr
+            part.BrickColor = BrickColor.new("Bright blue")
+        end
+        
+        local mesh = Instance.new("SpecialMesh")
+        mesh.MeshType = Enum.MeshType.Sphere
+        mesh.Parent = part
+        
+        part.Parent = model
+        model.PrimaryPart = part
+    else
+        model:ScaleTo(1.5)
+    end
+    
+    -- Add trail
+    if model.PrimaryPart then
+        local trail = Instance.new("Trail")
+        trail.Attachment0 = Instance.new("Attachment", model.PrimaryPart)
+        trail.Attachment1 = Instance.new("Attachment", model.PrimaryPart)
+        trail.Attachment1.Position = Vector3.new(0, -2, 0)
+        
+        if selectedType == "mfr" then
+            trail.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 255)),
+                ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 0))
+            })
+        elseif selectedType == "nfr" then
+            trail.Color = ColorSequence.new(Color3.fromRGB(0, 255, 0))
+        else
+            trail.Color = ColorSequence.new(Color3.fromRGB(0, 150, 255))
+        end
+        
+        trail.Transparency = NumberSequence.new(0.3)
+        trail.Lifetime = 0.8
+        trail.Parent = model.PrimaryPart
+        
+        -- Add light
+        local light = Instance.new("PointLight")
+        light.Range = 10
+        light.Brightness = 1.5
+        
+        if selectedType == "mfr" then
+            light.Color = Color3.fromRGB(255, 0, 255)
+        elseif selectedType == "nfr" then
+            light.Color = Color3.fromRGB(0, 255, 0)
+        else
+            light.Color = Color3.fromRGB(0, 150, 255)
+        end
+        
+        light.Parent = model.PrimaryPart
+    end
+    
+    -- Position at top of screen
+    local camera = workspace.CurrentCamera
+    local viewportSize = camera.ViewportSize
+    local randomX = math.random(100, viewportSize.X - 100)
+    local ray = camera:ViewportPointToRay(randomX, -50)
+    local spawnPos = ray.Origin + ray.Direction * 150
+    
+    model.Parent = workspace
+    if model.PrimaryPart then
+        model:SetPrimaryPartCFrame(CFrame.new(spawnPos) * CFrame.Angles(0, math.random(0, 360), 0))
+    end
+    
+    -- Simple spin animation
+    local spinConnection
+    spinConnection = RunService.Heartbeat:Connect(function(dt)
+        if model and model.PrimaryPart and model.Parent then
+            model:SetPrimaryPartCFrame(model.PrimaryPart.CFrame * CFrame.Angles(0, dt * speedValue * 2, 0))
+        else
+            if spinConnection then spinConnection:Disconnect() end
+        end
+    end)
+    
+    -- Falling tween
+    local targetPos = spawnPos - Vector3.new(0, 400, 0)
+    local fallTime = 3 / (speedValue / 5)
+    
+    local tween = TweenService:Create(model, TweenInfo.new(fallTime, Enum.EasingStyle.Quad), {
+        CFrame = CFrame.new(targetPos)
+    })
+    
+    tween:Play()
+    
+    -- When pet lands, make it redeemable
+    tween.Completed:Connect(function()
+        if spinConnection then spinConnection:Disconnect() end
+        
+        -- Make pet stationary
+        if model and model.PrimaryPart then
+            model.PrimaryPart.Anchored = true
+        end
+        
+        -- Add to redeemable pets list
+        if model and model.Parent then
+            table.insert(RedeemablePets, {
+                petData = item,
+                petModel = model
+            })
+            
+            -- Create proximity prompt
+            createProximityPrompt(model, item)
+            
+            -- Add highlight
+            if model.PrimaryPart then
+                local highlight = Instance.new("SelectionBox")
+                highlight.Adornee = model.PrimaryPart
+                highlight.LineThickness = 0.05
+                highlight.Color3 = Color3.fromRGB(255, 255, 0)
+                highlight.Transparency = 0.5
+                highlight.Parent = model.PrimaryPart
+            end
+            
+            -- Update pet counter
+            petCounterLabel.Text = "Pets on ground: " .. #RedeemablePets
+        end
+    end)
+    
+    -- Store in active pets
+    local petId = tostring(math.random())
+    activePets[petId] = model
+    
+    Debris:AddItem(model, 120) -- Keep for 2 minutes to allow redemption
+    
+    return model
+end
+
+-- ==============================================
+-- RAIN FUNCTION
+-- ==============================================
+
+local function startRain()
+    if isRaining then 
+        statusLabel.Text = "Already raining!"
+        return 
+    end
+    
+    isRaining = true
+    rainButton.Text = "RAINING..."
+    rainButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    
+    local typeNames = {fr = "FR", nfr = "NFR", mfr = "MFR"}
+    statusLabel.Text = "Raining " .. petCount .. " " .. typeNames[selectedType] .. " pets..."
+    
+    for i = 1, petCount do
+        pcall(createRainPet)
+        
+        if i % 5 == 0 then
+            statusLabel.Text = "Spawned " .. i .. "/" .. petCount .. " pets..."
+        end
+        
+        if i < petCount then
+            task.wait(0.15)
+        end
+    end
+    
+    statusLabel.Text = "Complete! (" .. petCount .. " pets)"
+    rainButton.Text = "☔ MAKE IT RAIN ☔"
+    rainButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+    
+    task.wait(2)
+    statusLabel.Text = "Ready"
+    isRaining = false
+end
+
+-- ==============================================
+-- UPDATE PET COUNTER LOOP
+-- ==============================================
+
+spawn(function()
+    while screenGui and screenGui.Parent do
+        petCounterLabel.Text = "Pets on ground: " .. #RedeemablePets
+        task.wait(1)
+    end
+end)
+
+-- ==============================================
+-- CLEAN UP PROMPTS ON CLOSE
+-- ==============================================
+
+local function cleanupAllPrompts()
+    for id, data in pairs(activePrompts) do
+        if data.prompt then
+            data.prompt:Destroy()
+        end
+        if data.part then
+            data.part:Destroy()
+        end
+    end
+    activePrompts = {}
+end
+
+-- ==============================================
+-- EVENT HANDLERS
+-- ==============================================
+
+closeBtn.MouseButton1Click:Connect(function()
+    cleanupAllPrompts()
+    screenGui:Destroy()
+    for id, pet in pairs(activePets) do
+        if pet and pet.Parent then
+            pet:Destroy()
+        end
+    end
+    RedeemablePets = {}
+end)
+
+rainButton.MouseButton1Click:Connect(function()
+    if not isRaining then
+        startRain()
+    end
+end)
+
+-- KEEP ALL BUTTON CLICK
+keepAllButton.MouseButton1Click:Connect(keepAllPets)
+
+-- Unequip all on load
+task.spawn(function()
+    task.wait(1)
+    for _, wrapper in pairs(ClientData.get("pet_char_wrappers") or {}) do
+        pcall(function()
+            OriginalRouterGet("ToolAPI/Unequip"):InvokeServer(wrapper.pet_unique)
+        end)
+    end
+end)
+
+print("✅ KEEP ALL PETS BUTTON LOADED!")
+print("📊 Total pets: " .. #AllPets)
+print("🪽 FR | 🌟 NFR | 🌈 MFR")
+print("💾 Click KEEP ALL to instantly collect all fallen pets!")
