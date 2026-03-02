@@ -1,0 +1,434 @@
+-- Rain Pet GUI - Extracted from 4fire script
+-- Creates a GUI button that makes random pets rain from the sky
+
+local Players = game:GetService('Players')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local RunService = game:GetService('RunService')
+local UserInputService = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local HttpService = game:GetService('HttpService')
+local Debris = game:GetService('Debris')
+
+pcall(function()
+    setthreadidentity(2)
+end)
+
+local LocalPlayer = Players.LocalPlayer
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Load required modules
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+local LoadModule = Fsys.load
+
+local InventoryDB = LoadModule("InventoryDB")
+local KindDB = LoadModule("KindDB")
+local DownloadClient = LoadModule("DownloadClient")
+local PetRigs = LoadModule("new:PetRigs")
+
+-- Extract all pet names from InventoryDB
+local AllPets = {}
+for id, info in pairs(InventoryDB.pets) do
+    if info.name then
+        table.insert(AllPets, {
+            id = id,
+            name = info.name,
+            displayName = info.name
+        })
+    end
+end
+
+print("✅ Loaded " .. #AllPets .. " pets for rain effect")
+
+-- Create main GUI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RainPetGUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+-- Main button
+local rainButton = Instance.new("TextButton")
+rainButton.Size = UDim2.new(0, 150, 0, 50)
+rainButton.Position = UDim2.new(0.5, -75, 0.1, 0)
+rainButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+rainButton.Text = "☔ RAIN PETS ☔"
+rainButton.Font = Enum.Font.GothamBold
+rainButton.TextSize = 14
+rainButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+rainButton.Parent = screenGui
+rainButton.Draggable = true
+
+-- Style the button
+local buttonCorner = Instance.new("UICorner")
+buttonCorner.CornerRadius = UDim.new(0, 12)
+buttonCorner.Parent = rainButton
+
+local buttonStroke = Instance.new("UIStroke")
+buttonStroke.Thickness = 2
+buttonStroke.Color = Color3.fromRGB(255, 255, 255)
+buttonStroke.Transparency = 0.3
+buttonStroke.Parent = rainButton
+
+-- Shadow effect
+local shadow = Instance.new("Frame")
+shadow.Size = UDim2.new(1, 4, 1, 4)
+shadow.Position = UDim2.new(0, -2, 0, -2)
+shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+shadow.BackgroundTransparency = 0.7
+shadow.ZIndex = rainButton.ZIndex - 1
+shadow.Parent = rainButton
+Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 12)
+
+-- Counter label
+local counterLabel = Instance.new("TextLabel")
+counterLabel.Size = UDim2.new(1, 0, 0, 20)
+counterLabel.Position = UDim2.new(0, 0, 1, 5)
+counterLabel.BackgroundTransparency = 1
+counterLabel.Text = "Ready to rain!"
+counterLabel.Font = Enum.Font.Gotham
+counterLabel.TextSize = 10
+counterLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+counterLabel.Parent = rainButton
+
+-- Settings panel (toggle with right-click)
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Size = UDim2.new(0, 200, 0, 150)
+settingsPanel.Position = UDim2.new(0.5, -100, 0.25, 0)
+settingsPanel.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+settingsPanel.Visible = false
+settingsPanel.Parent = screenGui
+settingsPanel.Active = true
+settingsPanel.Draggable = true
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 8)
+panelCorner.Parent = settingsPanel
+
+local panelTitle = Instance.new("TextLabel")
+panelTitle.Size = UDim2.new(1, 0, 0, 30)
+panelTitle.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+panelTitle.Text = "⚙️ Rain Settings ⚙️"
+panelTitle.Font = Enum.Font.GothamBold
+panelTitle.TextSize = 12
+panelTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+panelTitle.Parent = settingsPanel
+Instance.new("UICorner", panelTitle).CornerRadius = UDim.new(0, 8)
+
+-- Close button for panel
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 20, 0, 20)
+closeBtn.Position = UDim2.new(1, -25, 0, 5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Parent = settingsPanel
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+
+-- Settings content
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1, -20, 1, -40)
+contentFrame.Position = UDim2.new(0, 10, 0, 35)
+contentFrame.BackgroundTransparency = 1
+contentFrame.Parent = settingsPanel
+
+-- Rain amount slider
+local amountLabel = Instance.new("TextLabel")
+amountLabel.Size = UDim2.new(1, 0, 0, 20)
+amountLabel.BackgroundTransparency = 1
+amountLabel.Text = "Rain Amount: 10"
+amountLabel.Font = Enum.Font.Gotham
+amountLabel.TextSize = 10
+amountLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+amountLabel.TextXAlignment = Enum.TextXAlignment.Left
+amountLabel.Parent = contentFrame
+
+local amountSlider = Instance.new("Frame")
+amountSlider.Size = UDim2.new(1, 0, 0, 4)
+amountSlider.Position = UDim2.new(0, 0, 0, 25)
+amountSlider.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+amountSlider.Parent = contentFrame
+Instance.new("UICorner", amountSlider).CornerRadius = UDim.new(1, 0)
+
+local amountFill = Instance.new("Frame")
+amountFill.Size = UDim2.new(0.5, 0, 1, 0)
+amountFill.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+amountFill.Parent = amountSlider
+Instance.new("UICorner", amountFill).CornerRadius = UDim.new(1, 0)
+
+local amountValue = 10
+local dragging = false
+
+-- Rain speed slider
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(1, 0, 0, 20)
+speedLabel.Position = UDim2.new(0, 0, 0, 40)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = "Rain Speed: 5"
+speedLabel.Font = Enum.Font.Gotham
+speedLabel.TextSize = 10
+speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.Parent = contentFrame
+
+local speedSlider = Instance.new("Frame")
+speedSlider.Size = UDim2.new(1, 0, 0, 4)
+speedSlider.Position = UDim2.new(0, 0, 0, 65)
+speedSlider.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+speedSlider.Parent = contentFrame
+Instance.new("UICorner", speedSlider).CornerRadius = UDim.new(1, 0)
+
+local speedFill = Instance.new("Frame")
+speedFill.Size = UDim2.new(0.5, 0, 1, 0)
+speedFill.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+speedFill.Parent = speedSlider
+Instance.new("UICorner", speedFill).CornerRadius = UDim.new(1, 0)
+
+local speedValue = 5
+
+-- Mega neon toggle
+local megaNeonToggle = Instance.new("TextButton")
+megaNeonToggle.Size = UDim2.new(0.8, 0, 0, 20)
+megaNeonToggle.Position = UDim2.new(0.1, 0, 0, 80)
+megaNeonToggle.BackgroundColor3 = Color3.fromRGB(100, 0, 255)
+megaNeonToggle.Text = "✨ Mega Neon: OFF"
+megaNeonToggle.Font = Enum.Font.GothamBold
+megaNeonToggle.TextSize = 9
+megaNeonToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+megaNeonToggle.Parent = contentFrame
+Instance.new("UICorner", megaNeonToggle).CornerRadius = UDim.new(0, 4)
+
+local megaNeon = false
+
+-- Functions
+local function GenerateUniqueID()
+    return HttpService:GenerateGUID(false)
+end
+
+local function GetRandomPet()
+    return AllPets[math.random(1, #AllPets)]
+end
+
+local function CreateRainPet()
+    local petData = GetRandomPet()
+    if not petData then return end
+    
+    -- Create pet model
+    local success, petModel = pcall(function()
+        return DownloadClient.promise_download_copy("Pets", petData.id):expect()
+    end)
+    
+    if not success or not petModel then
+        warn("Failed to load pet: " .. petData.name)
+        return
+    end
+    
+    local model = petModel:Clone()
+    
+    -- Random position at top of screen
+    local viewportSize = workspace.CurrentCamera.ViewportSize
+    local randomX = math.random(100, viewportSize.X - 100)
+    local ray = workspace.CurrentCamera:ViewportPointToRay(randomX, -50)
+    local rainPos = ray.Origin + ray.Direction * 100
+    
+    -- Add some random offset
+    rainPos = rainPos + Vector3.new(math.random(-30, 30), 0, math.random(-30, 30))
+    
+    model.Parent = workspace
+    model:SetPrimaryPartCFrame(CFrame.new(rainPos) * CFrame.Angles(0, math.random(0, 360), 0))
+    
+    -- Add neon effects if enabled
+    if megaNeon and model:FindFirstChild("PetModel") then
+        local petModel = model.PetModel
+        for _, part in pairs(petModel:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Material = Enum.Material.Neon
+                part.Color = Color3.fromHSV(math.random(), 1, 1)
+            end
+        end
+    end
+    
+    -- Add trail effect
+    local trail = Instance.new("Trail")
+    trail.Attachment0 = Instance.new("Attachment", model.PrimaryPart)
+    trail.Attachment1 = Instance.new("Attachment", model.PrimaryPart)
+    trail.Attachment1.Position = Vector3.new(0, -2, 0)
+    trail.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255))
+    trail.Transparency = NumberSequence.new(0.5)
+    trail.Lifetime = 0.5
+    trail.Enabled = true
+    
+    -- Create falling tween
+    local targetPos = rainPos - Vector3.new(0, 200, 0)
+    local tweenInfo = TweenInfo.new(
+        2 / speedValue, -- Speed factor
+        Enum.EasingStyle.Quad,
+        Enum.EasingDirection.In
+    )
+    
+    local tween = TweenService:Create(model, tweenInfo, {
+        CFrame = CFrame.new(targetPos) * CFrame.Angles(math.random(0, 360), math.random(0, 360), math.random(0, 360))
+    })
+    
+    tween:Play()
+    
+    -- Add spin
+    local spinConnection
+    spinConnection = RunService.Heartbeat:Connect(function(dt)
+        if model and model.PrimaryPart then
+            model:SetPrimaryPartCFrame(model.PrimaryPart.CFrame * CFrame.Angles(0, dt * 3, 0))
+        else
+            spinConnection:Disconnect()
+        end
+    end)
+    
+    -- Clean up
+    tween.Completed:Connect(function()
+        spinConnection:Disconnect()
+        -- Fade out and destroy
+        if model then
+            for _, part in pairs(model:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local fadeTween = TweenService:Create(part, TweenInfo.new(1), {Transparency = 1})
+                    fadeTween:Play()
+                end
+            end
+            task.wait(1)
+            model:Destroy()
+        end
+    end)
+    
+    Debris:AddItem(model, 10)
+    
+    return model
+end
+
+local function RainPets()
+    local count = amountValue
+    counterLabel.Text = "Raining " .. count .. " pets..."
+    
+    for i = 1, count do
+        CreateRainPet()
+        if i < count then
+            task.wait(0.1) -- Small delay between each pet
+        end
+    end
+    
+    counterLabel.Text = "Rain complete!"
+    task.wait(1)
+    counterLabel.Text = "Ready to rain!"
+end
+
+-- Button interactions
+rainButton.MouseButton1Click:Connect(RainPets)
+
+rainButton.MouseButton2Click:Connect(function()
+    settingsPanel.Visible = not settingsPanel.Visible
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    settingsPanel.Visible = false
+end)
+
+-- Slider interactions
+local function updateSlider(input, slider, fill, label, min, max, callback)
+    local pos = input.Position.X
+    local absPos = slider.AbsolutePosition.X
+    local size = slider.AbsoluteSize.X
+    
+    local percent = math.clamp((pos - absPos) / size, 0, 1)
+    fill.Size = UDim2.new(percent, 0, 1, 0)
+    
+    local value = math.floor(min + (max - min) * percent)
+    label.Text = label.Text:gsub("%d+", tostring(value))
+    callback(value)
+end
+
+amountSlider.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        updateSlider(input, amountSlider, amountFill, amountLabel, 1, 50, function(val)
+            amountValue = val
+        end)
+    end
+end)
+
+speedSlider.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        updateSlider(input, speedSlider, speedFill, speedLabel, 1, 10, function(val)
+            speedValue = val
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        if amountSlider.Active then
+            updateSlider(input, amountSlider, amountFill, amountLabel, 1, 50, function(val)
+                amountValue = val
+            end)
+        elseif speedSlider.Active then
+            updateSlider(input, speedSlider, speedFill, speedLabel, 1, 10, function(val)
+                speedValue = val
+            end)
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+
+-- Mega neon toggle
+megaNeonToggle.MouseButton1Click:Connect(function()
+    megaNeon = not megaNeon
+    if megaNeon then
+        megaNeonToggle.Text = "✨ Mega Neon: ON"
+        megaNeonToggle.BackgroundColor3 = Color3.fromRGB(255, 0, 255)
+    else
+        megaNeonToggle.Text = "✨ Mega Neon: OFF"
+        megaNeonToggle.BackgroundColor3 = Color3.fromRGB(100, 0, 255)
+    end
+end)
+
+-- Hide settings when clicking outside
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local pos = UserInputService:GetMouseLocation()
+        local absPos = settingsPanel.AbsolutePosition
+        local size = settingsPanel.AbsoluteSize
+        
+        if settingsPanel.Visible then
+            if pos.X < absPos.X or pos.X > absPos.X + size.X or
+               pos.Y < absPos.Y or pos.Y > absPos.Y + size.Y then
+                -- Check if not clicking the button that opened it
+                local btnPos = rainButton.AbsolutePosition
+                local btnSize = rainButton.AbsoluteSize
+                if pos.X < btnPos.X or pos.X > btnPos.X + btnSize.X or
+                   pos.Y < btnPos.Y or pos.Y > btnPos.Y + btnSize.Y then
+                    settingsPanel.Visible = false
+                end
+            end
+        end
+    end
+end)
+
+-- Rainbow animation for button
+task.spawn(function()
+    local hue = 0
+    while true do
+        hue = (hue + 0.01) % 1
+        if not settingsPanel.Visible then
+            rainButton.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+        end
+        task.wait(0.05)
+    end
+end)
+
+print("✅ Rain Pet GUI loaded! Click the button to make pets rain from the sky!")
+print("📊 Total pets available: " .. #AllPets)
+print("🖱️ Right-click the button for settings")
