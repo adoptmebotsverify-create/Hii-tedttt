@@ -1,0 +1,500 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+
+if not LocalPlayer then
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
+end
+
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ===================== GUI VARIABLES =====================
+local guiVisible = true
+
+-- MacOS Color Scheme
+local darkBlue = Color3.fromRGB(32, 42, 68)
+local lightBlue = Color3.fromRGB(94, 124, 186)
+local white = Color3.fromRGB(255, 255, 255)
+local offWhite = Color3.fromRGB(245, 245, 247)
+local darkGray = Color3.fromRGB(60, 70, 90)
+
+-- ===================== CONTROL PANEL =====================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AdminChatControl"
+screenGui.Parent = playerGui
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 320, 0, 480)
+mainFrame.Position = UDim2.new(0.01, 0, 0.01, 0)
+mainFrame.BackgroundColor3 = darkBlue
+mainFrame.BackgroundTransparency = 0
+mainFrame.BorderSizePixel = 0
+mainFrame.ZIndex = 1
+mainFrame.Active = true
+mainFrame.Selectable = true
+mainFrame.Parent = screenGui
+
+local uiCorner = Instance.new("UICorner")
+uiCorner.CornerRadius = UDim.new(0, 12)
+uiCorner.Parent = mainFrame
+
+local uiStroke = Instance.new("UIStroke")
+uiStroke.Color = lightBlue
+uiStroke.Thickness = 1
+uiStroke.Transparency = 0.3
+uiStroke.Parent = mainFrame
+
+-- Title Bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 32)
+titleBar.Position = UDim2.new(0, 0, 0, 0)
+titleBar.BackgroundColor3 = darkGray
+titleBar.BackgroundTransparency = 0.2
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 12)
+titleCorner.Parent = titleBar
+
+-- MacOS traffic light buttons
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 14, 0, 14)
+closeBtn.Position = UDim2.new(0, 10, 0, 9)
+closeBtn.BackgroundColor3 = Color3.fromRGB(255, 95, 87)
+closeBtn.BackgroundTransparency = 0
+closeBtn.Text = ""
+closeBtn.Parent = titleBar
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(1, 0)
+closeCorner.Parent = closeBtn
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size = UDim2.new(0, 14, 0, 14)
+minimizeBtn.Position = UDim2.new(0, 28, 0, 9)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(255, 189, 46)
+minimizeBtn.BackgroundTransparency = 0
+minimizeBtn.Text = ""
+minimizeBtn.Parent = titleBar
+
+local minimizeCorner = Instance.new("UICorner")
+minimizeCorner.CornerRadius = UDim.new(1, 0)
+minimizeCorner.Parent = minimizeBtn
+
+local titleText = Instance.new("TextLabel")
+titleText.Size = UDim2.new(1, -70, 0, 32)
+titleText.Position = UDim2.new(0, 60, 0, 0)
+titleText.BackgroundTransparency = 1
+titleText.Text = "Admin Chat Control"
+titleText.TextColor3 = offWhite
+titleText.Font = Enum.Font.SourceSansSemibold
+titleText.TextSize = 14
+titleText.TextXAlignment = Enum.TextXAlignment.Center
+titleText.Parent = titleBar
+
+closeBtn.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)
+
+minimizeBtn.MouseButton1Click:Connect(function()
+    guiVisible = not guiVisible
+    mainFrame.Visible = guiVisible
+end)
+
+-- ===================== CONTENT =====================
+local contentContainer = Instance.new("ScrollingFrame")
+contentContainer.Size = UDim2.new(1, -20, 1, -50)
+contentContainer.Position = UDim2.new(0, 10, 0, 40)
+contentContainer.BackgroundTransparency = 1
+contentContainer.ScrollBarThickness = 4
+contentContainer.ScrollBarImageColor3 = lightBlue
+contentContainer.CanvasSize = UDim2.new(0, 0, 0, 420)
+contentContainer.Parent = mainFrame
+
+-- ===================== GUI HELPERS =====================
+local function Tween(obj, props, t, style, dir)
+    style = style or Enum.EasingStyle.Quart
+    dir = dir or Enum.EasingDirection.Out
+    TweenService:Create(obj, TweenInfo.new(t or 0.2, style, dir), props):Play()
+end
+
+local function AddCorner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 10)
+    c.Parent = parent
+    return c
+end
+
+local function AddStroke(parent, color, thickness, transparency)
+    local s = Instance.new("UIStroke")
+    s.Color = color or lightBlue
+    s.Thickness = thickness or 1.2
+    s.Transparency = transparency or 0.5
+    s.Parent = parent
+    return s
+end
+
+local function MakeLabel(parent, text, yPos, size)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -24, 0, 16)
+    lbl.Position = UDim2.fromOffset(12, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = lightBlue
+    lbl.Font = Enum.Font.SourceSansSemibold
+    lbl.TextSize = size or 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.ZIndex = 12
+    lbl.Parent = parent
+    return lbl
+end
+
+local function MakeInput(parent, placeholder, defaultText, yPos, w, h)
+    w = w or 276; h = h or 32
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.fromOffset(w, h)
+    box.Position = UDim2.fromOffset(12, yPos)
+    box.BackgroundColor3 = darkGray
+    box.BackgroundTransparency = 0.3
+    box.BorderSizePixel = 0
+    box.PlaceholderText = placeholder
+    box.Text = defaultText or ""
+    box.TextColor3 = offWhite
+    box.PlaceholderColor3 = Color3.fromRGB(150, 150, 160)
+    box.Font = Enum.Font.SourceSans
+    box.TextSize = 13
+    box.ClearTextOnFocus = false
+    box.ZIndex = 12
+    box.Parent = parent
+    AddCorner(box, 8)
+    local stroke = AddStroke(box, lightBlue, 1.2, 0.5)
+    box.Focused:Connect(function()
+        Tween(stroke, { Color = lightBlue, Transparency = 0 }, 0.2)
+        Tween(box, { BackgroundColor3 = Color3.fromRGB(70, 80, 100) }, 0.2)
+    end)
+    box.FocusLost:Connect(function()
+        Tween(stroke, { Color = lightBlue, Transparency = 0.5 }, 0.2)
+        Tween(box, { BackgroundColor3 = darkGray }, 0.2)
+    end)
+    return box
+end
+
+local function MakeButton(parent, text, bgColor, yPos, w, h)
+    w = w or 276; h = h or 34
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromOffset(w, h)
+    btn.Position = UDim2.fromOffset(12, yPos)
+    btn.BackgroundColor3 = bgColor
+    btn.BorderSizePixel = 0
+    btn.Text = text
+    btn.TextColor3 = white
+    btn.Font = Enum.Font.SourceSansSemibold
+    btn.TextSize = 13
+    btn.ZIndex = 12
+    btn.Parent = parent
+    AddCorner(btn, 8)
+    local originalColor = bgColor
+    btn.MouseEnter:Connect(function()
+        Tween(btn, { BackgroundColor3 = originalColor:Lerp(white, 0.14) }, 0.15)
+    end)
+    btn.MouseLeave:Connect(function()
+        Tween(btn, { BackgroundColor3 = originalColor }, 0.15)
+    end)
+    return btn
+end
+
+-- ===================== DROPDOWN WIDGET =====================
+local function MakeDropdown(parent, options, yPos, w, onSelect)
+    w = w or 276
+    local selectedIndex = 1
+
+    local container = Instance.new("Frame")
+    container.Size = UDim2.fromOffset(w, 32)
+    container.Position = UDim2.fromOffset(12, yPos)
+    container.BackgroundTransparency = 1
+    container.ZIndex = 15
+    container.ClipsDescendants = false
+    container.Parent = parent
+
+    local trigger = Instance.new("TextButton")
+    trigger.Size = UDim2.fromOffset(w, 32)
+    trigger.Position = UDim2.fromOffset(0, 0)
+    trigger.BackgroundColor3 = darkGray
+    trigger.BackgroundTransparency = 0.3
+    trigger.BorderSizePixel = 0
+    trigger.Text = ""
+    trigger.ZIndex = 15
+    trigger.Parent = container
+    AddCorner(trigger, 8)
+    local triggerStroke = AddStroke(trigger, lightBlue, 1.2, 0.5)
+
+    local triggerLabel = Instance.new("TextLabel")
+    triggerLabel.Size = UDim2.new(1, -30, 1, 0)
+    triggerLabel.Position = UDim2.fromOffset(10, 0)
+    triggerLabel.BackgroundTransparency = 1
+    triggerLabel.Text = options[1].label
+    triggerLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+    triggerLabel.Font = Enum.Font.SourceSans
+    triggerLabel.TextSize = 12
+    triggerLabel.TextXAlignment = Enum.TextXAlignment.Left
+    triggerLabel.ZIndex = 16
+    triggerLabel.Parent = trigger
+
+    local arrow = Instance.new("TextLabel")
+    arrow.Size = UDim2.fromOffset(20, 32)
+    arrow.Position = UDim2.new(1, -24, 0, 0)
+    arrow.BackgroundTransparency = 1
+    arrow.Text = "▼"
+    arrow.TextColor3 = lightBlue
+    arrow.Font = Enum.Font.SourceSansBold
+    arrow.TextSize = 12
+    arrow.ZIndex = 16
+    arrow.Parent = trigger
+
+    local listFrame = Instance.new("ScrollingFrame")
+    listFrame.Size = UDim2.fromOffset(w, math.min(#options * 30, 150))
+    listFrame.Position = UDim2.fromOffset(0, 36)
+    listFrame.BackgroundColor3 = darkGray
+    listFrame.BackgroundTransparency = 0.1
+    listFrame.BorderSizePixel = 0
+    listFrame.CanvasSize = UDim2.fromOffset(0, #options * 30)
+    listFrame.ScrollBarThickness = 3
+    listFrame.ScrollBarImageColor3 = lightBlue
+    listFrame.Visible = false
+    listFrame.ZIndex = 20
+    listFrame.Parent = container
+    AddCorner(listFrame, 8)
+    AddStroke(listFrame, lightBlue, 1.2, 0.3)
+
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = listFrame
+
+    local isOpen = false
+
+    for i, opt in ipairs(options) do
+        local item = Instance.new("TextButton")
+        item.Size = UDim2.new(1, 0, 0, 30)
+        item.BackgroundColor3 = darkGray
+        item.BackgroundTransparency = 0.1
+        item.BorderSizePixel = 0
+        item.Text = opt.label
+        item.TextColor3 = i == 1 and Color3.fromRGB(150, 150, 160) or offWhite
+        item.Font = i == selectedIndex and Enum.Font.SourceSansSemibold or Enum.Font.SourceSans
+        item.TextSize = 12
+        item.TextXAlignment = Enum.TextXAlignment.Left
+        item.ZIndex = 21
+        item.LayoutOrder = i
+        item.Parent = listFrame
+
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0, 10)
+        pad.Parent = item
+
+        item.MouseEnter:Connect(function()
+            Tween(item, { BackgroundColor3 = Color3.fromRGB(70, 80, 100) }, 0.1)
+        end)
+        item.MouseLeave:Connect(function()
+            Tween(item, { BackgroundColor3 = darkGray }, 0.1)
+        end)
+
+        item.MouseButton1Click:Connect(function()
+            selectedIndex = i
+            triggerLabel.Text = opt.label
+            triggerLabel.TextColor3 = i == 1 and Color3.fromRGB(150, 150, 160) or offWhite
+            isOpen = false
+            Tween(listFrame, { Size = UDim2.fromOffset(w, 0) }, 0.15)
+            Tween(arrow, { Rotation = 0 }, 0.15)
+            Tween(triggerStroke, { Color = lightBlue, Transparency = 0.5 }, 0.15)
+            task.delay(0.16, function() listFrame.Visible = false end)
+            if onSelect then onSelect(opt, i) end
+        end)
+    end
+
+    trigger.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        if isOpen then
+            listFrame.Size = UDim2.fromOffset(w, 0)
+            listFrame.Visible = true
+            Tween(listFrame, { Size = UDim2.fromOffset(w, math.min(#options * 30, 150)) }, 0.2)
+            Tween(arrow, { Rotation = 180 }, 0.2)
+            Tween(triggerStroke, { Color = lightBlue, Transparency = 0 }, 0.15)
+        else
+            Tween(listFrame, { Size = UDim2.fromOffset(w, 0) }, 0.15)
+            Tween(arrow, { Rotation = 0 }, 0.15)
+            Tween(triggerStroke, { Color = lightBlue, Transparency = 0.5 }, 0.15)
+            task.delay(0.16, function() listFrame.Visible = false end)
+        end
+    end)
+
+    return container
+end
+
+-- ===================== BUILD UI =====================
+local yPos = 5
+
+-- Username input
+MakeLabel(contentContainer, "USERNAME", yPos)
+local UsernameBox = MakeInput(contentContainer, "enter username...", "", yPos + 15, 276, 32)
+yPos = yPos + 55
+
+-- Preset users dropdown
+MakeLabel(contentContainer, "OR PICK A PRESET USER", yPos)
+local PRESET_USERS = {
+    { label = "— select user —", username = "", userId = nil },
+    { label = "builderman", username = "builderman", userId = 156 },
+    { label = "roblox", username = "ROBLOX", userId = 1 },
+    { label = "flamingo", username = "mrflimflam", userId = 35443650 },
+    { label = "denisdaily", username = "DenisDailyYT", userId = 19697867 },
+    { label = "mrbeast", username = "MrBeast6000", userId = 1266488798 },
+    { label = "lozorak", username = "Lozorak", userId = 55732587 },
+    { label = "linkmon99", username = "linkmon99", userId = 68124170 },
+    { label = "asimo3089", username = "asimo3089", userId = 9199895 },
+}
+local UserDropdown = MakeDropdown(contentContainer, PRESET_USERS, yPos + 15, 276, function(opt)
+    if opt.userId then
+        UsernameBox.Text = opt.username
+    else
+        UsernameBox.Text = ""
+    end
+end)
+yPos = yPos + 55
+
+-- Message input
+MakeLabel(contentContainer, "MESSAGE", yPos)
+local MessageBox = MakeInput(contentContainer, "type something...", "", yPos + 15, 276, 60)
+MessageBox.TextWrapped = true
+MessageBox.TextYAlignment = Enum.TextYAlignment.Top
+yPos = yPos + 80
+
+-- Preset messages dropdown
+MakeLabel(contentContainer, "OR PICK A PRESET MESSAGE", yPos)
+local PRESET_MESSAGES = {
+    { label = "— select preset —", message = "" },
+    { label = "starpets sponsor", message = "This live is sponsored by Starpets!" },
+    { label = "trading open", message = "I'm open to trading! send me offers 🐾" },
+    { label = "giveaway", message = "GIVEAWAY TIME! drop your username below 👇" },
+    { label = "neon for neon", message = "neon for neon fair trades only pls 🌟" },
+    { label = "going afk", message = "going afk for a bit, be back soon!" },
+    { label = "no lowballs", message = "please no lowball offers, be fair 🙏" },
+    { label = "free pets", message = "giving away free pets! first come first serve 🎁" },
+}
+local MsgDropdown = MakeDropdown(contentContainer, PRESET_MESSAGES, yPos + 15, 276, function(opt)
+    if opt.message ~= "" then
+        MessageBox.Text = opt.message
+    end
+end)
+yPos = yPos + 55
+
+-- Duration
+MakeLabel(contentContainer, "DURATION (SECONDS)", yPos)
+local DurationBox = MakeInput(contentContainer, "10", "10", yPos + 15, 100, 32)
+yPos = yPos + 50
+
+-- Status label
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -24, 0, 20)
+StatusLabel.Position = UDim2.fromOffset(12, yPos)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = ""
+StatusLabel.TextColor3 = Color3.fromRGB(110, 231, 183)
+StatusLabel.Font = Enum.Font.SourceSans
+StatusLabel.TextSize = 11
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.ZIndex = 12
+StatusLabel.Parent = contentContainer
+yPos = yPos + 25
+
+-- Buttons container
+local buttonContainer = Instance.new("Frame")
+buttonContainer.Size = UDim2.new(1, -24, 0, 40)
+buttonContainer.Position = UDim2.fromOffset(12, yPos)
+buttonContainer.BackgroundTransparency = 1
+buttonContainer.Parent = contentContainer
+
+local SendBtn = MakeButton(buttonContainer, "SEND MESSAGE", Color3.fromRGB(124, 58, 237), 0, 186, 34)
+SendBtn.Position = UDim2.fromOffset(0, 0)
+
+local ClearBtn = MakeButton(buttonContainer, "CLEAR", Color3.fromRGB(127, 29, 29), 0, 80, 34)
+ClearBtn.Position = UDim2.fromOffset(196, 0)
+
+yPos = yPos + 45
+contentContainer.CanvasSize = UDim2.new(0, 0, 0, yPos)
+
+local function SetStatus(msg, color)
+    StatusLabel.Text = msg
+    StatusLabel.TextColor3 = Color3.fromHex(color or "#6ee7b7")
+    StatusLabel.TextTransparency = 0
+    task.delay(3, function()
+        if StatusLabel.Text == msg then
+            Tween(StatusLabel, { TextTransparency = 1 }, 0.4)
+        end
+    end)
+end
+
+-- ===================== BASIC BUTTON FUNCTIONS =====================
+SendBtn.MouseButton1Click:Connect(function()
+    SetStatus("Message sent!", "#6ee7b7")
+    Tween(SendBtn, { BackgroundColor3 = Color3.fromRGB(5, 150, 105) }, 0.15)
+    task.delay(0.5, function()
+        Tween(SendBtn, { BackgroundColor3 = Color3.fromRGB(124, 58, 237) }, 0.3)
+    end)
+end)
+
+ClearBtn.MouseButton1Click:Connect(function()
+    SetStatus("Cleared", "#93c5fd")
+end)
+
+-- ===================== DRAGGABLE GUI =====================
+local dragging, dragStart, startPos
+
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+       input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or 
+                     input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- Toggle GUI with X key
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.X then
+        guiVisible = not guiVisible
+        mainFrame.Visible = guiVisible
+    end
+end)
+
+print([[
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ADMIN CHAT CONTROL GUI
+   Press X to toggle
+   MacOS Dark Blue Style
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+]])
