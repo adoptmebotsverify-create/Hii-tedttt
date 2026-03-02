@@ -1,0 +1,189 @@
+-- Create the main ScreenGui
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "StatueSpawnerGUI"
+screenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+
+-- Create the main frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 200, 0, 100)
+mainFrame.Position = UDim2.new(0.5, -100, 0.5, -50)
+mainFrame.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+mainFrame.BackgroundTransparency = 0.2
+mainFrame.BorderSizePixel = 2
+mainFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+-- Add a title
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "Title"
+titleLabel.Size = UDim2.new(1, 0, 0, 30)
+titleLabel.Position = UDim2.new(0, 0, 0, 0)
+titleLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+titleLabel.Text = "Educational Statue Spawner"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextScaled = true
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.Parent = mainFrame
+
+-- Create the spawn button
+local spawnButton = Instance.new("TextButton")
+spawnButton.Name = "SpawnButton"
+spawnButton.Size = UDim2.new(0.8, 0, 0, 40)
+spawnButton.Position = UDim2.new(0.1, 0, 0.5, -20)
+spawnButton.BackgroundColor3 = Color3.fromRGB(100, 200, 100)
+spawnButton.Text = "Spawn Statue"
+spawnButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+spawnButton.TextScaled = true
+spawnButton.Font = Enum.Font.SourceSansBold
+spawnButton.Parent = mainFrame
+
+-- Function to create the statue
+local function createStatue()
+    -- Get the player's character position
+    local player = game.Players.LocalPlayer
+    local character = player.Character
+    if not character then return end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+    
+    -- Create a model for the statue
+    local statueModel = Instance.new("Model")
+    statueModel.Name = "Statue_" .. math.random(1000, 9999)
+    
+    -- Create base part
+    local basePart = Instance.new("Part")
+    basePart.Name = "Base"
+    basePart.Size = Vector3.new(2, 0.5, 2)
+    basePart.Position = rootPart.Position + Vector3.new(0, -2, 5)
+    basePart.BrickColor = BrickColor.new("Medium stone grey")
+    basePart.Anchored = true
+    basePart.Material = Enum.Material.Slate
+    basePart.Parent = statueModel
+    
+    -- Create main column
+    local mainColumn = Instance.new("Part")
+    mainColumn.Name = "Column"
+    mainColumn.Size = Vector3.new(0.8, 3, 0.8)
+    mainColumn.Position = basePart.Position + Vector3.new(0, 1.75, 0)
+    mainColumn.BrickColor = BrickColor.new("Medium stone grey")
+    mainColumn.Anchored = true
+    mainColumn.Material = Enum.Material.Slate
+    mainColumn.Parent = statueModel
+    
+    -- Create top sphere (educational art piece)
+    local topSphere = Instance.new("Part")
+    topSphere.Name = "TopSphere"
+    topSphere.Shape = Enum.PartType.Ball
+    topSphere.Size = Vector3.new(0.6, 0.6, 0.6)
+    topSphere.Position = mainColumn.Position + Vector3.new(0, 1.8, 0)
+    topSphere.BrickColor = BrickColor.new("Bright red")
+    topSphere.Anchored = true
+    topSphere.Material = Enum.Material.SmoothPlastic
+    topSphere.Parent = statueModel
+    
+    -- Create educational side decorations
+    local leftDecoration = Instance.new("Part")
+    leftDecoration.Name = "LeftWing"
+    leftDecoration.Size = Vector3.new(0.3, 0.8, 0.2)
+    leftDecoration.Position = mainColumn.Position + Vector3.new(-0.6, 1.2, 0)
+    leftDecoration.BrickColor = BrickColor.new("Bright yellow")
+    leftDecoration.Anchored = true
+    leftDecoration.Material = Enum.Material.SmoothPlastic
+    leftDecoration.Parent = statueModel
+    
+    local rightDecoration = Instance.new("Part")
+    rightDecoration.Name = "RightWing"
+    rightDecoration.Size = Vector3.new(0.3, 0.8, 0.2)
+    rightDecoration.Position = mainColumn.Position + Vector3.new(0.6, 1.2, 0)
+    rightDecoration.BrickColor = BrickColor.new("Bright yellow")
+    rightDecoration.Anchored = true
+    rightDecoration.Material = Enum.Material.SmoothPlastic
+    rightDecoration.Parent = statueModel
+    
+    -- Add some educational text
+    local textPart = Instance.new("Part")
+    textPart.Name = "TextPlate"
+    textPart.Size = Vector3.new(1, 0.2, 0.5)
+    textPart.Position = basePart.Position + Vector3.new(0, 0.5, 1)
+    textPart.BrickColor = BrickColor.new("Black")
+    textPart.Anchored = true
+    textPart.Material = Enum.Material.SmoothPlastic
+    textPart.Parent = statueModel
+    
+    -- Add BillboardGui for educational text
+    local billboardGui = Instance.new("BillboardGui")
+    billboardGui.Name = "EducationalText"
+    billboardGui.Size = UDim2.new(2, 0, 0.5, 0)
+    billboardGui.StudsOffset = Vector3.new(0, 0.3, 0)
+    billboardGui.AlwaysOnTop = true
+    billboardGui.Parent = textPart
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Name = "Text"
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = "Educational Art Piece #" .. math.random(100, 999)
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.TextScaled = true
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.Parent = billboardGui
+    
+    -- Parent the model to workspace
+    statueModel.Parent = workspace
+    
+    -- Add a cool spawn effect
+    local spawnEffect = Instance.new("Part")
+    spawnEffect.Name = "SpawnEffect"
+    spawnEffect.Size = Vector3.new(3, 3, 3)
+    spawnEffect.Position = basePart.Position
+    spawnEffect.Transparency = 0.5
+    spawnEffect.BrickColor = BrickColor.new("Bright green")
+    spawnEffect.Anchored = true
+    spawnEffect.CanCollide = false
+    spawnEffect.Material = Enum.Material.Neon
+    spawnEffect.Parent = workspace
+    
+    -- Fade out the effect
+    game:GetService("TweenService"):Create(
+        spawnEffect,
+        TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {Transparency = 1}
+    ):Play()
+    
+    -- Remove effect after animation
+    game:GetService("Debris"):AddItem(spawnEffect, 1)
+end
+
+-- Connect button click
+spawnButton.MouseButton1Click:Connect(function()
+    createStatue()
+end)
+
+-- Optional: Add hover effects
+spawnButton.MouseEnter:Connect(function()
+    spawnButton.BackgroundColor3 = Color3.fromRGB(120, 220, 120)
+end)
+
+spawnButton.MouseLeave:Connect(function()
+    spawnButton.BackgroundColor3 = Color3.fromRGB(100, 200, 100)
+end)
+
+-- Add a close button
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.Size = UDim2.new(0, 20, 0, 20)
+closeButton.Position = UDim2.new(1, -25, 0, 5)
+closeButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextScaled = true
+closeButton.Font = Enum.Font.SourceSansBold
+closeButton.Parent = mainFrame
+
+closeButton.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)
