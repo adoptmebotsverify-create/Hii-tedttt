@@ -1,0 +1,1583 @@
+-- Rain Pet GUI - 100 PETS EVERY 5 SECONDS + BURY CLOSEST PET
+-- Click button to bury the closest landed pet 100 studs underground
+
+local Players = game:GetService('Players')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local RunService = game:GetService('RunService')
+local UserInputService = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local HttpService = game:GetService('HttpService')
+local Debris = game:GetService('Debris')
+local Lighting = game:GetService('Lighting')
+
+-- Set thread identity for proper access
+pcall(function()
+    setthreadidentity(2)
+end)
+
+local LocalPlayer = Players.LocalPlayer
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Load modules from the first script
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+local LoadModule = Fsys.load
+
+local ClientData = LoadModule("ClientData")
+local InventoryDB = LoadModule("InventoryDB")
+local KindDB = LoadModule("KindDB")
+local DownloadClient = LoadModule("DownloadClient")
+local PetRigs = LoadModule("new:PetRigs")
+local RouterClient = LoadModule("RouterClient")
+local UIManager = LoadModule("UIManager")
+
+-- Make InventoryDB global
+_G.InventoryDB = InventoryDB
+
+-- ==============================================
+-- OUTLINE CONFIGURATION
+-- ==============================================
+
+local OutlineConfig = {
+    Enabled = true,
+    OutlineTransparency = 0.3,
+    Colors = {
+        fr = Color3.fromRGB(0, 150, 255),    -- Blue for FR
+        nfr = Color3.fromRGB(0, 255, 100),    -- Green for NFR
+        mfr = Color3.fromRGB(255, 0, 255)     -- Purple for MFR
+    }
+}
+
+-- ==============================================
+-- ANTI-LAG CONFIGURATION
+-- ==============================================
+
+local AntiLag = {
+    MaxPetsAtOnce = 40,
+    PetLifetime = 6,
+    SpawnDelay = 0.05,
+    BatchSize = 20,
+    BatchDelay = 0.2,
+    EnableTrails = true,
+    EnableLights = true,
+    EnableOutlines = true,
+    LowQualityMode = false,
+    LastGarbageCollect = 0,
+    GarbageCollectInterval = 5,
+    ContinuousMode = false,
+}
+
+-- Performance monitoring
+local FPSMonitor = {
+    frames = 0,
+    lastTime = tick(),
+    currentFPS = 60
+}
+
+local function updateFPS()
+    FPSMonitor.frames = FPSMonitor.frames + 1
+    local currentTime = tick()
+    if currentTime - FPSMonitor.lastTime >= 1 then
+        FPSMonitor.currentFPS = FPSMonitor.frames
+        FPSMonitor.frames = 0
+        FPSMonitor.lastTime = currentTime
+        
+        if FPSMonitor.currentFPS < 25 then
+            AntiLag.LowQualityMode = true
+            AntiLag.EnableTrails = false
+            AntiLag.EnableLights = false
+            AntiLag.EnableOutlines = true
+            AntiLag.MaxPetsAtOnce = 25
+        elseif FPSMonitor.currentFPS < 40 then
+            AntiLag.LowQualityMode = true
+            AntiLag.EnableTrails = true
+            AntiLag.EnableLights = false
+            AntiLag.EnableOutlines = true
+            AntiLag.MaxPetsAtOnce = 35
+        else
+            AntiLag.LowQualityMode = false
+            AntiLag.EnableTrails = true
+            AntiLag.EnableLights = true
+            AntiLag.EnableOutlines = true
+            AntiLag.MaxPetsAtOnce = 40
+        end
+    end
+end
+
+-- Garbage collector
+local function garbageCollect()
+    local currentTime = tick()
+    if currentTime - AntiLag.LastGarbageCollect < AntiLag.GarbageCollectInterval then
+        return
+    end
+    AntiLag.LastGarbageCollect = currentTime
+    
+    local petCount = 0
+    for _, pet in pairs(activePets) do
+        if pet and pet.Parent then
+            petCount = petCount + 1
+        end
+    end
+    
+    if petCount > AntiLag.MaxPetsAtOnce then
+        local toRemove = petCount - AntiLag.MaxPetsAtOnce
+        local removed = 0
+        
+        local petList = {}
+        for id, pet in pairs(activePets) do
+            if pet and pet.Parent then
+                local creationTime = pet:GetAttribute("CreationTime") or 0
+                table.insert(petList, {id = id, pet = pet, time = creationTime})
+            end
+        end
+        
+        table.sort(petList, function(a, b) return a.time < b.time end)
+        
+        for i = 1, math.min(toRemove, #petList) do
+            local petData = petList[i]
+            if petData.pet and petData.pet.Parent then
+                petData.pet:Destroy()
+                activePets[petData.id] = nil
+                removed = removed + 1
+            end
+        end
+    end
+    
+    collectgarbage()
+end
+
+-- ==============================================
+-- BYPASS EQUIP SYSTEM
+-- ==============================================
+
+local OriginalRouterGet = RouterClient.get
+local SpawnedPets = {}
+local EquippedPet = nil
+
+-- Pet Model Cache
+local PetModelCache = {}
+
+local function FetchPetModel(petKind)
+    if PetModelCache[petKind] then
+        return PetModelCache[petKind]:Clone()
+    end
+    local success, model = pcall(function()
+        return DownloadClient.promise_download_copy("Pets", petKind):expect()
+    end)
+    if success and model then
+        PetModelCache[petKind] = model
+        return model:Clone()
+    end
+    return nil
+end
+
+local function GenerateUniqueID()
+    return HttpService:GenerateGUID(false)
+end
+
+local function GenerateUniquePetName()
+    local prefixes = {"★", "☆", "♡", "☁️", "✨", "🍓", "🌸", "🍯", "☕", "🌙", "🌈", "❄️", "🫧", "🍬", "🍪", "🥛"}
+    local names = {"Shadow", "Blaze", "Frost", "Thunder", "Moon", "Star", "Sky", "Ocean", "River", "Storm"}
+    
+    local usePrefix = math.random(1, 3) == 1
+    local name = names[math.random(1, #names)]
+    
+    if usePrefix then
+        return prefixes[math.random(1, #prefixes)] .. name
+    else
+        return name .. " " .. prefixes[math.random(1, #prefixes)]
+    end
+end
+
+-- Newness groups
+local NewnessGroups = {
+    mega_neon_flyable_rideable = 990000,
+    neon_flyable_rideable = 950000,
+    flyable_rideable = 910000,
+    regular = 880000
+}
+
+local function GetPropertyGroup(properties)
+    local isMega = properties.mega_neon or false
+    local isNeon = properties.neon or false
+    local canFly = properties.flyable or false
+    local canRide = properties.rideable or false
+
+    if isMega then
+        return "mega_neon_flyable_rideable"
+    elseif isNeon then
+        return "neon_flyable_rideable"
+    else
+        return "flyable_rideable"
+    end
+end
+
+-- Update ClientData function
+local function UpdateClientData(dataPath, modifier)
+    local identity = get_thread_identity and get_thread_identity() or 8
+    set_thread_identity(2)
+    local currentData = ClientData.get(dataPath)
+    local clonedData = table.clone(currentData)
+    local result = modifier(clonedData)
+    ClientData.predict(dataPath, result)
+    set_thread_identity(identity)
+    return result
+end
+
+local function FindInTable(array, checker)
+    for index, value in pairs(array) do
+        if checker(value, index) then
+            return index
+        end
+    end
+    return nil
+end
+
+-- Register/Remove functions
+local function RegisterPetWrapper(wrapperData)
+    UpdateClientData("pet_char_wrappers", function(wrappers)
+        wrapperData.unique = #wrappers + 1
+        wrapperData.index = #wrappers + 1
+        wrappers[#wrappers + 1] = wrapperData
+        return wrappers
+    end)
+end
+
+local function RegisterPetState(stateManager)
+    UpdateClientData("pet_state_managers", function(managers)
+        managers[#managers + 1] = stateManager
+        return managers
+    end)
+end
+
+local function RemovePetWrapper(petUniqueId)
+    UpdateClientData("pet_char_wrappers", function(wrappers)
+        local wrapperIndex = FindInTable(wrappers, function(w)
+            return w.pet_unique == petUniqueId
+        end)
+        if wrapperIndex then
+            table.remove(wrappers, wrapperIndex)
+            for i = wrapperIndex, #wrappers do
+                wrappers[i].unique = i
+                wrappers[i].index = i
+            end
+        end
+        return wrappers
+    end)
+end
+
+local function RemovePetState(petUniqueId)
+    local pet = SpawnedPets[petUniqueId]
+    if not pet or not pet.model then return end
+
+    UpdateClientData("pet_state_managers", function(managers)
+        local managerIndex = FindInTable(managers, function(m)
+            return m.char == pet.model
+        end)
+        if managerIndex then
+            table.remove(managers, managerIndex)
+        end
+        return managers
+    end)
+end
+
+-- Unequip pet
+local function UnequipPet(petData)
+    local pet = SpawnedPets[petData.unique]
+    if not pet or not pet.model then return end
+
+    RemovePetWrapper(petData.unique)
+    RemovePetState(petData.unique)
+    pet.model:Destroy()
+    pet.model = nil
+
+    if EquippedPet and EquippedPet.unique == petData.unique then
+        EquippedPet = nil
+    end
+end
+
+-- Equip pet
+local function EquipPet(petData)
+    if petData.category ~= "pets" then return end
+
+    if EquippedPet then
+        UnequipPet(EquippedPet)
+    end
+
+    for _, wrapper in pairs(ClientData.get("pet_char_wrappers")) do
+        if wrapper.controller == LocalPlayer then
+            RouterClient.get("ToolAPI/Unequip"):InvokeServer(wrapper.pet_unique)
+        end
+    end
+
+    if not SpawnedPets[petData.unique] then
+        SpawnedPets[petData.unique] = { data = petData, model = nil }
+    end
+
+    local petModel = FetchPetModel(petData.kind)
+    if not petModel then return end
+    
+    petModel.Parent = workspace
+    SpawnedPets[petData.unique].model = petModel
+
+    EquippedPet = petData
+
+    task.defer(function()
+        RegisterPetWrapper({
+            char = petModel,
+            mega_neon = petData.properties.mega_neon or false,
+            neon = petData.properties.neon or false,
+            player = LocalPlayer,
+            entity_controller = LocalPlayer,
+            controller = LocalPlayer,
+            rp_name = petData.properties.rp_name or "",
+            pet_trick_level = petData.properties.pet_trick_level or 0,
+            pet_unique = petData.unique,
+            pet_id = petData.id,
+            location = {
+                full_destination_id = "housing",
+                destination_id = "housing",
+                house_owner = LocalPlayer
+            },
+            pet_progression = {
+                age = petData.properties.age or math.random(1, 6),
+                percentage = math.random(0, 99) / 100
+            },
+            are_colors_sealed = false,
+            is_pet = true,
+            friendship_level = petData.properties.friendship_level or 1
+        })
+
+        RegisterPetState({
+            char = petModel,
+            player = LocalPlayer,
+            store_key = "pet_state_managers",
+            is_sitting = false,
+            chars_connected_to_me = {},
+            states = {}
+        })
+    end)
+end
+
+-- ==============================================
+-- BYPASS ROUTER CLIENT
+-- ==============================================
+
+function RouterClient.get(endpoint)
+    if endpoint == "ToolAPI/Equip" then
+        return {
+            InvokeServer = function(_, uniqueId)
+                local pet = SpawnedPets[uniqueId]
+                if not pet then
+                    return OriginalRouterGet("ToolAPI/Equip"):InvokeServer(uniqueId)
+                end
+                EquipPet(pet.data)
+                return true, { action = "equip", is_server = true }
+            end
+        }
+    elseif endpoint == "ToolAPI/Unequip" then
+        return {
+            InvokeServer = function(_, uniqueId)
+                local pet = SpawnedPets[uniqueId]
+                if not pet then
+                    return OriginalRouterGet("ToolAPI/Unequip"):InvokeServer(uniqueId)
+                end
+                UnequipPet(pet.data)
+                return true, { action = "unequip", is_server = true }
+            end
+        }
+    else
+        return OriginalRouterGet(endpoint)
+    end
+end
+
+-- ==============================================
+-- CREATE INVENTORY ITEM
+-- ==============================================
+
+local NextToyOrder = 60000
+local SpawnedItems = {}
+
+local function CreateInventoryItem(itemId, category, properties)
+    local uniqueId = GenerateUniqueID()
+    local itemKindData = KindDB[itemId]
+
+    if not itemKindData then
+        warn("Item not found: " .. itemId)
+        return nil
+    end
+
+    properties = properties or {}
+    local newnessValue = NextToyOrder
+
+    if category == "pets" then
+        local groupKey = GetPropertyGroup(properties)
+        NewnessGroups[groupKey] = NewnessGroups[groupKey] - 1
+        newnessValue = NewnessGroups[groupKey]
+
+        if not properties.ailments_completed then
+            properties.ailments_completed = 0
+        end
+
+        if not properties.rp_name or properties.rp_name == "" then
+            properties.rp_name = GenerateUniquePetName()
+        end
+        
+        if properties.mega_neon and not properties.friendship_level then
+            properties.friendship_level = math.random(1, 5)
+        end
+    else
+        NextToyOrder = NextToyOrder - 1
+        newnessValue = NextToyOrder
+    end
+
+    local itemData = {
+        unique = uniqueId,
+        category = category,
+        id = itemId,
+        kind = itemKindData.kind,
+        newness_order = newnessValue,
+        properties = properties,
+        _source = "rain_pet"
+    }
+
+    local identity = get_thread_identity and get_thread_identity() or 8
+    set_thread_identity(2)
+    local inventory = ClientData.get("inventory")
+    if inventory and inventory[category] then
+        inventory[category][uniqueId] = itemData
+    end
+    set_thread_identity(identity)
+
+    if category == "pets" then
+        SpawnedPets[uniqueId] = { data = itemData, model = nil }
+    end
+    
+    SpawnedItems[uniqueId] = true
+
+    task.defer(function()
+        if UIManager and UIManager.apps and UIManager.apps.BackpackApp then
+            UIManager.apps.BackpackApp:refresh_rendered_items()
+        end
+    end)
+
+    return itemData
+end
+
+-- ==============================================
+-- COLLECT ALL PETS
+-- ==============================================
+
+local AllPets = {}
+for id, info in pairs(InventoryDB.pets) do
+    if info.name then
+        table.insert(AllPets, {
+            id = id,
+            name = info.name,
+            kind = info.kind
+        })
+    end
+end
+
+print("✅ Loaded " .. #AllPets .. " pets from InventoryDB")
+
+-- ==============================================
+-- GUI
+-- ==============================================
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RainPetGUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 350, 0, 550)
+mainFrame.Position = UDim2.new(0.5, -175, 0.5, -275)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = mainFrame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+title.Text = "☔ 100 PETS/5 SEC ☔"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 20
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Parent = mainFrame
+Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -35, 0, 5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 16
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Parent = title
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+local instLabel = Instance.new("TextLabel")
+instLabel.Size = UDim2.new(1, -20, 0, 20)
+instLabel.Position = UDim2.new(0, 10, 0, 45)
+instLabel.BackgroundTransparency = 1
+instLabel.Text = "Select pet type:"
+instLabel.Font = Enum.Font.Gotham
+instLabel.TextSize = 14
+instLabel.TextXAlignment = Enum.TextXAlignment.Left
+instLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+instLabel.Parent = mainFrame
+
+local buttonFrame = Instance.new("Frame")
+buttonFrame.Size = UDim2.new(1, -20, 0, 40)
+buttonFrame.Position = UDim2.new(0, 10, 0, 65)
+buttonFrame.BackgroundTransparency = 1
+buttonFrame.Parent = mainFrame
+
+-- FR Button
+local frBtn = Instance.new("TextButton")
+frBtn.Size = UDim2.new(0.3, -2, 1, 0)
+frBtn.Position = UDim2.new(0, 0, 0, 0)
+frBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+frBtn.Text = "🪽 FR"
+frBtn.Font = Enum.Font.GothamBold
+frBtn.TextSize = 16
+frBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+frBtn.Parent = buttonFrame
+Instance.new("UICorner", frBtn).CornerRadius = UDim.new(0, 6)
+
+-- NFR Button
+local nfrBtn = Instance.new("TextButton")
+nfrBtn.Size = UDim2.new(0.3, -2, 1, 0)
+nfrBtn.Position = UDim2.new(0.35, 0, 0, 0)
+nfrBtn.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+nfrBtn.Text = "🌟 NFR"
+nfrBtn.Font = Enum.Font.GothamBold
+nfrBtn.TextSize = 16
+nfrBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+nfrBtn.Parent = buttonFrame
+Instance.new("UICorner", nfrBtn).CornerRadius = UDim.new(0, 6)
+
+-- MFR Button
+local mfrBtn = Instance.new("TextButton")
+mfrBtn.Size = UDim2.new(0.3, -2, 1, 0)
+mfrBtn.Position = UDim2.new(0.7, 0, 0, 0)
+mfrBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 255)
+mfrBtn.Text = "🌈 MFR"
+mfrBtn.Font = Enum.Font.GothamBold
+mfrBtn.TextSize = 16
+mfrBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+mfrBtn.Parent = buttonFrame
+Instance.new("UICorner", mfrBtn).CornerRadius = UDim.new(0, 6)
+
+local selectedType = "fr"
+local selectedLabel = Instance.new("TextLabel")
+selectedLabel.Size = UDim2.new(1, -20, 0, 20)
+selectedLabel.Position = UDim2.new(0, 10, 0, 110)
+selectedLabel.BackgroundTransparency = 1
+selectedLabel.Text = "Selected: FR (Fly + Ride)"
+selectedLabel.Font = Enum.Font.Gotham
+selectedLabel.TextSize = 12
+selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+selectedLabel.TextColor3 = Color3.fromRGB(0, 150, 255)
+selectedLabel.Parent = mainFrame
+
+local function updateSelection(type)
+    selectedType = type
+    if type == "fr" then
+        selectedLabel.Text = "Selected: FR (Fly + Ride)"
+        selectedLabel.TextColor3 = Color3.fromRGB(0, 150, 255)
+    elseif type == "nfr" then
+        selectedLabel.Text = "Selected: NFR (Neon + Fly + Ride)"
+        selectedLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+    elseif type == "mfr" then
+        selectedLabel.Text = "Selected: MFR (Mega Neon + Fly + Ride)"
+        selectedLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+    end
+end
+
+frBtn.MouseButton1Click:Connect(function() updateSelection("fr") end)
+nfrBtn.MouseButton1Click:Connect(function() updateSelection("nfr") end)
+mfrBtn.MouseButton1Click:Connect(function() updateSelection("mfr") end)
+
+-- Rain mode selection
+local modeLabel = Instance.new("TextLabel")
+modeLabel.Size = UDim2.new(1, -20, 0, 20)
+modeLabel.Position = UDim2.new(0, 10, 0, 135)
+modeLabel.BackgroundTransparency = 1
+modeLabel.Text = "Rain mode:"
+modeLabel.Font = Enum.Font.Gotham
+modeLabel.TextSize = 12
+modeLabel.TextXAlignment = Enum.TextXAlignment.Left
+modeLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+modeLabel.Parent = mainFrame
+
+local modeFrame = Instance.new("Frame")
+modeFrame.Size = UDim2.new(1, -20, 0, 30)
+modeFrame.Position = UDim2.new(0, 10, 0, 155)
+modeFrame.BackgroundTransparency = 1
+modeFrame.Parent = mainFrame
+
+local singleBtn = Instance.new("TextButton")
+singleBtn.Size = UDim2.new(0.48, -2, 1, 0)
+singleBtn.Position = UDim2.new(0, 0, 0, 0)
+singleBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+singleBtn.Text = "Single Rain"
+singleBtn.Font = Enum.Font.GothamBold
+singleBtn.TextSize = 12
+singleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+singleBtn.Parent = modeFrame
+Instance.new("UICorner", singleBtn).CornerRadius = UDim.new(0, 6)
+
+local continuousBtn = Instance.new("TextButton")
+continuousBtn.Size = UDim2.new(0.48, -2, 1, 0)
+continuousBtn.Position = UDim2.new(0.52, 0, 0, 0)
+continuousBtn.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+continuousBtn.Text = "Continuous (100/5s)"
+continuousBtn.Font = Enum.Font.GothamBold
+continuousBtn.TextSize = 12
+continuousBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+continuousBtn.Parent = modeFrame
+Instance.new("UICorner", continuousBtn).CornerRadius = UDim.new(0, 6)
+
+local continuousStatus = Instance.new("TextLabel")
+continuousStatus.Size = UDim2.new(1, -20, 0, 15)
+continuousStatus.Position = UDim2.new(0, 10, 0, 190)
+continuousStatus.BackgroundTransparency = 1
+continuousStatus.Text = "⏸ Continuous mode: OFF"
+continuousStatus.Font = Enum.Font.Gotham
+continuousStatus.TextSize = 11
+continuousStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+continuousStatus.Parent = mainFrame
+
+local qualityLabel = Instance.new("TextLabel")
+qualityLabel.Size = UDim2.new(1, -20, 0, 15)
+qualityLabel.Position = UDim2.new(0, 10, 0, 210)
+qualityLabel.BackgroundTransparency = 1
+qualityLabel.Text = "⚡ Performance: High"
+qualityLabel.Font = Enum.Font.Gotham
+qualityLabel.TextSize = 10
+qualityLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+qualityLabel.Parent = mainFrame
+
+-- Outline toggle button
+local outlineButton = Instance.new("TextButton")
+outlineButton.Size = UDim2.new(0.48, -2, 0, 25)
+outlineButton.Position = UDim2.new(0, 10, 0, 230)
+outlineButton.BackgroundColor3 = Color3.fromRGB(255, 255, 0)
+outlineButton.Text = "✨ OUTLINE: ON"
+outlineButton.Font = Enum.Font.GothamBold
+outlineButton.TextSize = 11
+outlineButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+outlineButton.Parent = mainFrame
+Instance.new("UICorner", outlineButton).CornerRadius = UDim.new(0, 6)
+
+-- Rain button
+local rainButton = Instance.new("TextButton")
+rainButton.Size = UDim2.new(1, -20, 0, 45)
+rainButton.Position = UDim2.new(0, 10, 0, 265)
+rainButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+rainButton.Text = "☔ START RAIN ☔"
+rainButton.Font = Enum.Font.GothamBold
+rainButton.TextSize = 16
+rainButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+rainButton.Parent = mainFrame
+Instance.new("UICorner", rainButton).CornerRadius = UDim.new(0, 8)
+
+-- Clear button
+local clearButton = Instance.new("TextButton")
+clearButton.Size = UDim2.new(1, -20, 0, 35)
+clearButton.Position = UDim2.new(0, 10, 0, 315)
+clearButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+clearButton.Text = "🗑️ CLEAR ALL PETS 🗑️"
+clearButton.Font = Enum.Font.GothamBold
+clearButton.TextSize = 14
+clearButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+clearButton.Parent = mainFrame
+Instance.new("UICorner", clearButton).CornerRadius = UDim.new(0, 8)
+
+-- ==============================================
+-- BURY CLOSEST PET BUTTON
+-- ==============================================
+
+local buryButton = Instance.new("TextButton")
+buryButton.Size = UDim2.new(1, -20, 0, 35)
+buryButton.Position = UDim2.new(0, 10, 0, 355)
+buryButton.BackgroundColor3 = Color3.fromRGB(139, 69, 19) -- Brown (like dirt)
+buryButton.Text = "🪦 BURY CLOSEST PET (100 STUD UNDERGROUND) 🪦"
+buryButton.Font = Enum.Font.GothamBold
+buryButton.TextSize = 10
+buryButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+buryButton.Parent = mainFrame
+Instance.new("UICorner", buryButton).CornerRadius = UDim.new(0, 8)
+
+-- Status label
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 25)
+statusLabel.Position = UDim2.new(0, 10, 0, 395)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Ready"
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 12
+statusLabel.TextColor3 = Color3.fromRGB(180, 180, 220)
+statusLabel.Parent = mainFrame
+
+-- Stats display
+local statsLabel = Instance.new("TextLabel")
+statsLabel.Size = UDim2.new(1, -20, 0, 40)
+statsLabel.Position = UDim2.new(0, 10, 0, 425)
+statsLabel.BackgroundTransparency = 1
+statsLabel.Text = "Active: 0 | Total: 0 | Rate: 0/s"
+statsLabel.Font = Enum.Font.Gotham
+statsLabel.TextSize = 11
+statsLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+statsLabel.Parent = mainFrame
+
+-- Bury indicator
+local buryIndicator = Instance.new("TextLabel")
+buryIndicator.Size = UDim2.new(1, -20, 0, 15)
+buryIndicator.Position = UDim2.new(0, 10, 0, 470)
+buryIndicator.BackgroundTransparency = 1
+buryIndicator.Text = "🪦 Click brown button to bury closest pet 100 studs underground"
+buryIndicator.Font = Enum.Font.Gotham
+buryIndicator.TextSize = 9
+buryIndicator.TextColor3 = Color3.fromRGB(205, 133, 63)
+buryIndicator.Parent = mainFrame
+
+-- ==============================================
+-- DIALOG FUNCTION (Updated for burying)
+-- ==============================================
+
+local function showBuryDialog(title, message, petName, petModel)
+    -- Create a dialog frame
+    local dialogFrame = Instance.new("Frame")
+    dialogFrame.Size = UDim2.new(0, 300, 0, 200)
+    dialogFrame.Position = UDim2.new(0.5, -150, 0.5, -100)
+    dialogFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+    dialogFrame.BackgroundTransparency = 0.1
+    dialogFrame.BorderSizePixel = 0
+    dialogFrame.Parent = screenGui
+    dialogFrame.ZIndex = 10
+    
+    -- Add corner
+    local dialogCorner = Instance.new("UICorner")
+    dialogCorner.CornerRadius = UDim.new(0, 10)
+    dialogCorner.Parent = dialogFrame
+    
+    -- Add stroke (brown for bury theme)
+    local dialogStroke = Instance.new("UIStroke")
+    dialogStroke.Thickness = 2
+    dialogStroke.Color = Color3.fromRGB(139, 69, 19) -- Brown
+    dialogStroke.Transparency = 0.3
+    dialogStroke.Parent = dialogFrame
+    
+    -- Title
+    local dialogTitle = Instance.new("TextLabel")
+    dialogTitle.Size = UDim2.new(1, 0, 0, 40)
+    dialogTitle.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    dialogTitle.Text = title
+    dialogTitle.Font = Enum.Font.GothamBold
+    dialogTitle.TextSize = 18
+    dialogTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    dialogTitle.Parent = dialogFrame
+    dialogTitle.ZIndex = 11
+    Instance.new("UICorner", dialogTitle).CornerRadius = UDim.new(0, 10)
+    
+    -- Message
+    local dialogMessage = Instance.new("TextLabel")
+    dialogMessage.Size = UDim2.new(1, -20, 0, 60)
+    dialogMessage.Position = UDim2.new(0, 10, 0, 50)
+    dialogMessage.BackgroundTransparency = 1
+    dialogMessage.Text = message .. "\n\nPet: " .. petName .. "\n\nThis will send it 100 studs underground!"
+    dialogMessage.Font = Enum.Font.Gotham
+    dialogMessage.TextSize = 12
+    dialogMessage.TextColor3 = Color3.fromRGB(255, 255, 255)
+    dialogMessage.TextWrapped = true
+    dialogMessage.Parent = dialogFrame
+    dialogMessage.ZIndex = 11
+    
+    -- Button frame
+    local buttonFrame = Instance.new("Frame")
+    buttonFrame.Size = UDim2.new(1, -20, 0, 40)
+    buttonFrame.Position = UDim2.new(0, 10, 1, -50)
+    buttonFrame.BackgroundTransparency = 1
+    buttonFrame.Parent = dialogFrame
+    buttonFrame.ZIndex = 11
+    
+    -- Confirm button (brown for bury)
+    local confirmBtn = Instance.new("TextButton")
+    confirmBtn.Size = UDim2.new(0.45, -2, 1, 0)
+    confirmBtn.Position = UDim2.new(0, 0, 0, 0)
+    confirmBtn.BackgroundColor3 = Color3.fromRGB(139, 69, 19) -- Brown
+    confirmBtn.Text = "BURY"
+    confirmBtn.Font = Enum.Font.GothamBold
+    confirmBtn.TextSize = 14
+    confirmBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    confirmBtn.Parent = buttonFrame
+    confirmBtn.ZIndex = 12
+    Instance.new("UICorner", confirmBtn).CornerRadius = UDim.new(0, 6)
+    
+    -- Cancel button
+    local cancelBtn = Instance.new("TextButton")
+    cancelBtn.Size = UDim2.new(0.45, -2, 1, 0)
+    cancelBtn.Position = UDim2.new(0.55, 0, 0, 0)
+    cancelBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+    cancelBtn.Text = "CANCEL"
+    cancelBtn.Font = Enum.Font.GothamBold
+    cancelBtn.TextSize = 14
+    cancelBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    cancelBtn.Parent = buttonFrame
+    cancelBtn.ZIndex = 12
+    Instance.new("UICorner", cancelBtn).CornerRadius = UDim.new(0, 6)
+    
+    -- Confirm action - BURY instead of delete
+    confirmBtn.MouseButton1Click:Connect(function()
+        dialogFrame:Destroy()
+        
+        -- Bury the pet 100 studs underground
+        if petModel and petModel.Parent and not petModel:GetAttribute("IsFading") then
+            -- Get current position
+            local currentPos
+            if petModel.PrimaryPart then
+                currentPos = petModel.PrimaryPart.Position
+            else
+                for _, part in pairs(petModel:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        currentPos = part.Position
+                        break
+                    end
+                end
+            end
+            
+            if currentPos then
+                -- Calculate underground position (100 studs down)
+                local undergroundPos = Vector3.new(currentPos.X, currentPos.Y - 100, currentPos.Z)
+                
+                -- Create tween to move underground
+                local tweenInfo = TweenInfo.new(
+                    1.5, -- Duration
+                    Enum.EasingStyle.Quad,
+                    Enum.EasingDirection.In
+                )
+                
+                -- Play sinking sound effect (optional visual)
+                statusLabel.Text = "Burying pet..."
+                
+                -- Move the pet underground
+                if petModel.PrimaryPart then
+                    local tween = TweenService:Create(petModel, tweenInfo, {
+                        CFrame = CFrame.new(undergroundPos) * (petModel.PrimaryPart.CFrame - petModel.PrimaryPart.Position)
+                    })
+                    tween:Play()
+                    
+                    -- After burying, mark as faded (optional - could keep underground)
+                    tween.Completed:Connect(function()
+                        -- Optional: fade out after reaching underground
+                        -- fadeOutAndDestroyPet(petModel)
+                        statusLabel.Text = "Pet buried!"
+                        task.wait(1)
+                        statusLabel.Text = "Ready"
+                    end)
+                else
+                    -- If no primary part, move all parts
+                    for _, part in pairs(petModel:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            local tween = TweenService:Create(part, tweenInfo, {
+                                Position = undergroundPos
+                            })
+                            tween:Play()
+                        end
+                    end
+                    statusLabel.Text = "Pet buried!"
+                    task.wait(1)
+                    statusLabel.Text = "Ready"
+                end
+            else
+                statusLabel.Text = "Couldn't find pet position!"
+                task.wait(1)
+                statusLabel.Text = "Ready"
+            end
+        end
+    end)
+    
+    -- Cancel action
+    cancelBtn.MouseButton1Click:Connect(function()
+        dialogFrame:Destroy()
+        statusLabel.Text = "Burying cancelled"
+        task.wait(1)
+        statusLabel.Text = "Ready"
+    end)
+    
+    -- Close when clicking outside
+    dialogFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local pos = UserInputService:GetMouseLocation()
+            local absPos = dialogFrame.AbsolutePosition
+            local size = dialogFrame.AbsoluteSize
+            
+            if pos.X < absPos.X or pos.X > absPos.X + size.X or
+               pos.Y < absPos.Y or pos.Y > absPos.Y + size.Y then
+                dialogFrame:Destroy()
+            end
+        end
+    end)
+end
+
+-- ==============================================
+-- OUTLINE TOGGLE FUNCTION
+-- ==============================================
+
+local outlinesEnabled = true
+
+local function toggleOutlines()
+    outlinesEnabled = not outlinesEnabled
+    AntiLag.EnableOutlines = outlinesEnabled
+    
+    if outlinesEnabled then
+        outlineButton.Text = "✨ OUTLINE: ON"
+        outlineButton.BackgroundColor3 = Color3.fromRGB(255, 255, 0)
+    else
+        outlineButton.Text = "⬜ OUTLINE: OFF"
+        outlineButton.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+    end
+    
+    for _, pet in pairs(activePets) do
+        if pet and pet.Parent then
+            for _, child in pairs(pet:GetDescendants()) do
+                if child:IsA("Highlight") and child.Name == "PetShapeOutline" then
+                    child:Destroy()
+                end
+            end
+            
+            if outlinesEnabled and AntiLag.EnableOutlines then
+                addShapeOutlineToPet(pet, selectedType)
+            end
+        end
+    end
+end
+
+outlineButton.MouseButton1Click:Connect(toggleOutlines)
+
+-- ==============================================
+-- FUNCTION TO ADD SHAPE-FOLLOWING OUTLINE TO PET
+-- ==============================================
+
+local function addShapeOutlineToPet(petModel, petType)
+    if not petModel then return end
+    if not outlinesEnabled or not AntiLag.EnableOutlines then return end
+    
+    local outlineColor = OutlineConfig.Colors[petType] or OutlineConfig.Colors.fr
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "PetShapeOutline"
+    highlight.Adornee = petModel
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillColor = outlineColor
+    highlight.FillTransparency = 0.8
+    highlight.OutlineColor = outlineColor
+    highlight.OutlineTransparency = 0.2
+    highlight.Parent = petModel
+    
+    return highlight
+end
+
+-- ==============================================
+-- BURY CLOSEST PET FUNCTION
+-- ==============================================
+
+local function buryClosestPet()
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
+        statusLabel.Text = "No character found!"
+        task.wait(1)
+        statusLabel.Text = "Ready"
+        return
+    end
+    
+    local playerPos = character.HumanoidRootPart.Position
+    local closestPet = nil
+    local closestDistance = math.huge
+    local closestPetName = "Unknown"
+    
+    -- Find the closest landed pet that's not fading
+    for _, pet in pairs(activePets) do
+        if pet and pet.Parent and pet:GetAttribute("HasLanded") and not pet:GetAttribute("IsFading") then
+            -- Get pet position (using primary part or first part)
+            local petPos
+            if pet.PrimaryPart then
+                petPos = pet.PrimaryPart.Position
+            else
+                -- Find any part to get position
+                for _, part in pairs(pet:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        petPos = part.Position
+                        break
+                    end
+                end
+            end
+            
+            if petPos then
+                local distance = (playerPos - petPos).Magnitude
+                if distance < closestDistance then
+                    closestDistance = distance
+                    closestPet = pet
+                    closestPetName = pet.Name or "Pet"
+                end
+            end
+        end
+    end
+    
+    if not closestPet then
+        statusLabel.Text = "No landed pets found!"
+        task.wait(1)
+        statusLabel.Text = "Ready"
+        return
+    end
+    
+    -- Show dialog confirmation for burying
+    showBuryDialog(
+        "Confirm Burial",
+        "Are you sure you want to bury this pet?",
+        closestPetName,
+        closestPet
+    )
+end
+
+-- Connect bury button
+buryButton.MouseButton1Click:Connect(buryClosestPet)
+
+-- ==============================================
+-- CLEAR ALL PETS FUNCTION
+-- ==============================================
+
+local function clearAllPets()
+    if isContinuous then
+        isContinuous = false
+        if continuousConnection then
+            continuousConnection:Disconnect()
+            continuousConnection = nil
+        end
+        continuousStatus.Text = "⏸ Continuous mode: OFF"
+        continuousStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+        rainButton.Text = "☔ START RAIN ☔"
+    end
+    
+    local count = 0
+    for _, pet in pairs(activePets) do
+        if pet and pet.Parent then
+            count = count + 1
+        end
+    end
+    
+    if count == 0 then
+        statusLabel.Text = "No pets to clear!"
+        task.wait(1)
+        statusLabel.Text = "Ready"
+        return
+    end
+    
+    statusLabel.Text = "Clearing " .. count .. " pets..."
+    clearButton.Text = "CLEARING..."
+    clearButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    clearButton.Active = false
+    
+    for id, pet in pairs(activePets) do
+        if pet and pet.Parent and not pet:GetAttribute("IsFading") then
+            fadeOutAndDestroyPet(pet)
+            task.wait(0.05)
+        end
+    end
+    
+    statusLabel.Text = "Cleared all pets!"
+    clearButton.Text = "🗑️ CLEAR ALL PETS 🗑️"
+    clearButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    clearButton.Active = true
+    
+    task.wait(1.5)
+    statusLabel.Text = "Ready"
+end
+
+-- ==============================================
+-- FADE OUT AND DESTROY PET FUNCTION
+-- ==============================================
+
+local function fadeOutAndDestroyPet(petModel)
+    if not petModel or not petModel.Parent then return end
+    if petModel:GetAttribute("IsFading") then return end
+    
+    petModel:SetAttribute("IsFading", true)
+    
+    -- Disable touch events while fading
+    for _, part in pairs(petModel:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanTouch = false
+        end
+    end
+    
+    -- Create fade out tween for all parts
+    for _, part in pairs(petModel:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local tween = TweenService:Create(part, TweenInfo.new(0.5, Enum.EasingStyle.Linear), {
+                Transparency = 1
+            })
+            tween:Play()
+        end
+    end
+    
+    -- Fade out highlights/outlines
+    for _, child in pairs(petModel:GetDescendants()) do
+        if child:IsA("Highlight") then
+            local tween = TweenService:Create(child, TweenInfo.new(0.5), {
+                OutlineTransparency = 1,
+                FillTransparency = 1
+            })
+            tween:Play()
+        end
+        if child:IsA("Trail") then
+            local tween = TweenService:Create(child, TweenInfo.new(0.5), {
+                Transparency = NumberSequence.new(1)
+            })
+            tween:Play()
+        end
+        if child:IsA("PointLight") then
+            local tween = TweenService:Create(child, TweenInfo.new(0.5), {
+                Brightness = 0
+            })
+            tween:Play()
+        end
+    end
+    
+    -- Destroy after fade
+    task.wait(0.6)
+    
+    for id, pet in pairs(activePets) do
+        if pet == petModel then
+            activePets[id] = nil
+            break
+        end
+    end
+    
+    petModel:Destroy()
+end
+
+-- ==============================================
+-- OPTIMIZED RAIN PET FUNCTION
+-- ==============================================
+
+local activePets = {}
+local isRaining = false
+local isContinuous = false
+local continuousConnection = nil
+local petIdCounter = 0
+local totalSpawned = 0
+local spawnRate = 0
+local speedValue = 5
+
+local function createRainPet()
+    if #AllPets == 0 then return nil end
+    
+    local currentPetCount = 0
+    for _,_ in pairs(activePets) do
+        currentPetCount = currentPetCount + 1
+    end
+    
+    if currentPetCount >= AntiLag.MaxPetsAtOnce then
+        return nil
+    end
+    
+    local petData = AllPets[math.random(1, #AllPets)]
+    
+    local properties = {
+        pet_trick_level = 5,
+        age = math.random(1, 6),
+        ailments_completed = 0,
+        rp_name = GenerateUniquePetName(),
+        flyable = true,
+        rideable = true,
+        mega_neon = (selectedType == "mfr"),
+        neon = (selectedType == "nfr")
+    }
+    
+    if selectedType == "mfr" then
+        properties.friendship_level = math.random(1, 5)
+    end
+    
+    local item = CreateInventoryItem(petData.id, "pets", properties)
+    
+    local model = FetchPetModel(petData.kind)
+    
+    if not model then
+        model = Instance.new("Model")
+        model.Name = petData.name
+        
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(1.5, 1.5, 1.5)
+        part.Anchored = false
+        part.CanCollide = false
+        
+        if selectedType == "mfr" then
+            part.BrickColor = BrickColor.new("Really red")
+        elseif selectedType == "nfr" then
+            part.BrickColor = BrickColor.new("Bright green")
+        else
+            part.BrickColor = BrickColor.new("Bright blue")
+        end
+        
+        part.Parent = model
+        model.PrimaryPart = part
+    else
+        model:ScaleTo(1.2)
+    end
+    
+    if model.PrimaryPart then
+        if AntiLag.EnableTrails then
+            local trail = Instance.new("Trail")
+            trail.Attachment0 = Instance.new("Attachment", model.PrimaryPart)
+            trail.Attachment1 = Instance.new("Attachment", model.PrimaryPart)
+            trail.Attachment1.Position = Vector3.new(0, -1, 0)
+            
+            if selectedType == "mfr" then
+                trail.Color = ColorSequence.new(Color3.fromRGB(255, 0, 255))
+            elseif selectedType == "nfr" then
+                trail.Color = ColorSequence.new(Color3.fromRGB(0, 255, 0))
+            else
+                trail.Color = ColorSequence.new(Color3.fromRGB(0, 150, 255))
+            end
+            
+            trail.Transparency = NumberSequence.new(0.3)
+            trail.Lifetime = 0.4
+            trail.Parent = model.PrimaryPart
+        end
+        
+        if AntiLag.EnableLights then
+            local light = Instance.new("PointLight")
+            light.Range = 6
+            light.Brightness = 0.8
+            
+            if selectedType == "mfr" then
+                light.Color = Color3.fromRGB(255, 0, 255)
+            elseif selectedType == "nfr" then
+                light.Color = Color3.fromRGB(0, 255, 0)
+            else
+                light.Color = Color3.fromRGB(0, 150, 255)
+            end
+            
+            light.Parent = model.PrimaryPart
+        end
+        
+        if outlinesEnabled and AntiLag.EnableOutlines then
+            addShapeOutlineToPet(model, selectedType)
+        end
+    end
+    
+    -- Get player position for close spawn
+    local character = LocalPlayer.Character
+    local spawnPos
+    
+    if character and character:FindFirstChild("HumanoidRootPart") then
+        local rootPart = character.HumanoidRootPart
+        local playerPos = rootPart.Position
+        
+        local angle = math.random() * 2 * math.pi
+        local distance = math.random(10, 20)
+        local xOffset = math.cos(angle) * distance
+        local zOffset = math.sin(angle) * distance
+        
+        spawnPos = Vector3.new(
+            playerPos.X + xOffset,
+            playerPos.Y + 25,
+            playerPos.Z + zOffset
+        )
+    else
+        local camera = workspace.CurrentCamera
+        local viewportSize = camera.ViewportSize
+        local randomX = math.random(100, viewportSize.X - 100)
+        local ray = camera:ViewportPointToRay(randomX, -50)
+        spawnPos = ray.Origin + ray.Direction * 50
+    end
+    
+    model.Parent = workspace
+    if model.PrimaryPart then
+        model:SetPrimaryPartCFrame(CFrame.new(spawnPos) * CFrame.Angles(0, math.random(0, 360), 0))
+    end
+    
+    -- Minimal spin animation while falling
+    local spinConnection
+    local lastUpdate = tick()
+    spinConnection = RunService.Heartbeat:Connect(function()
+        if model and model.PrimaryPart and model.Parent and not model:GetAttribute("HasLanded") then
+            local currentTime = tick()
+            if currentTime - lastUpdate > 0.05 then
+                model:SetPrimaryPartCFrame(model.PrimaryPart.CFrame * CFrame.Angles(0, 0.15, 0))
+                lastUpdate = currentTime
+            end
+        elseif not model or not model.Parent then
+            if spinConnection then spinConnection:Disconnect() end
+        end
+    end)
+    
+    -- Falling tween
+    local targetPos = Vector3.new(
+        spawnPos.X,
+        spawnPos.Y - 20,
+        spawnPos.Z
+    )
+    
+    local fallTime = 1.5 / (speedValue / 5)
+    
+    local tween = TweenService:Create(model, TweenInfo.new(fallTime, Enum.EasingStyle.Quad), {
+        CFrame = CFrame.new(targetPos)
+    })
+    
+    tween:Play()
+    
+    model:SetAttribute("CreationTime", tick())
+    model:SetAttribute("IsFading", false)
+    model:SetAttribute("HasLanded", false)
+    
+    -- When pet lands, mark as landed
+    tween.Completed:Connect(function()
+        if spinConnection then spinConnection:Disconnect() end
+        if model and model.Parent and not model:GetAttribute("IsFading") then
+            model:SetAttribute("HasLanded", true)
+            
+            -- Anchor the pet so it doesn't move
+            for _, part in pairs(model:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.Anchored = true
+                end
+            end
+        end
+    end)
+    
+    petIdCounter = petIdCounter + 1
+    local petId = "pet_" .. petIdCounter
+    activePets[petId] = model
+    totalSpawned = totalSpawned + 1
+    
+    Debris:AddItem(model, AntiLag.PetLifetime)
+    
+    return model
+end
+
+-- ==============================================
+-- BATCH SPAWN FUNCTION
+-- ==============================================
+
+local function spawnBatch(batchSize)
+    local spawned = 0
+    for i = 1, batchSize do
+        updateFPS()
+        
+        local success = pcall(createRainPet)
+        if success then
+            spawned = spawned + 1
+        end
+        
+        if i < batchSize then
+            task.wait(AntiLag.SpawnDelay)
+        end
+    end
+    return spawned
+end
+
+-- ==============================================
+-- CONTINUOUS RAIN FUNCTION
+-- ==============================================
+
+local function startContinuousRain()
+    if isContinuous then
+        -- Stop continuous rain
+        isContinuous = false
+        if continuousConnection then
+            continuousConnection:Disconnect()
+            continuousConnection = nil
+        end
+        continuousStatus.Text = "⏸ Continuous mode: OFF"
+        continuousStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+        rainButton.Text = "☔ START RAIN ☔"
+        statusLabel.Text = "Continuous rain stopped"
+        return
+    end
+    
+    isContinuous = true
+    continuousStatus.Text = "▶ Continuous mode: ON (100/5s)"
+    continuousStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
+    rainButton.Text = "☔ STOP RAIN ☔"
+    statusLabel.Text = "Continuous rain active - 100 pets/5s"
+    
+    totalSpawned = 0
+    
+    continuousConnection = RunService.Heartbeat:Connect(function() end)
+    
+    spawn(function()
+        while isContinuous and screenGui and screenGui.Parent do
+            local startTime = tick()
+            local spawned = 0
+            local batches = 5
+            
+            statusLabel.Text = "Raining batch 1/5..."
+            
+            for batch = 1, batches do
+                if not isContinuous then break end
+                
+                statusLabel.Text = "Raining batch " .. batch .. "/5..."
+                local batchSpawned = spawnBatch(AntiLag.BatchSize)
+                spawned = spawned + batchSpawned
+                
+                if batch < batches and isContinuous then
+                    task.wait(AntiLag.BatchDelay)
+                end
+            end
+            
+            local elapsed = tick() - startTime
+            spawnRate = math.floor(spawned / elapsed)
+            
+            local waitTime = 5 - elapsed
+            if waitTime > 0 and isContinuous then
+                task.wait(waitTime)
+            end
+        end
+        
+        isContinuous = false
+        continuousStatus.Text = "⏸ Continuous mode: OFF"
+        continuousStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+        rainButton.Text = "☔ START RAIN ☔"
+        statusLabel.Text = "Continuous rain stopped"
+    end)
+end
+
+-- ==============================================
+-- SINGLE RAIN FUNCTION
+-- ==============================================
+
+local function startSingleRain()
+    if isRaining then 
+        statusLabel.Text = "Already raining!"
+        return 
+    end
+    
+    isRaining = true
+    rainButton.Text = "RAINING..."
+    rainButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    rainButton.Active = false
+    
+    local typeNames = {fr = "FR", nfr = "NFR", mfr = "MFR"}
+    statusLabel.Text = "Raining 20 " .. typeNames[selectedType] .. " pets..."
+    
+    local spawned = spawnBatch(20)
+    
+    statusLabel.Text = "Complete! (" .. spawned .. " pets)"
+    rainButton.Text = "☔ SINGLE RAIN ☔"
+    rainButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+    rainButton.Active = true
+    
+    task.wait(2)
+    statusLabel.Text = "Ready"
+    isRaining = false
+end
+
+-- ==============================================
+-- PERFORMANCE MONITORING LOOP
+-- ==============================================
+
+spawn(function()
+    while screenGui and screenGui.Parent do
+        updateFPS()
+        garbageCollect()
+        
+        local count = 0
+        for _, pet in pairs(activePets) do
+            if pet and pet.Parent and not pet:GetAttribute("IsFading") then
+                count = count + 1
+            end
+        end
+        
+        statsLabel.Text = string.format("Active: %d | Total: %d | Rate: %d/s", 
+            count, totalSpawned, spawnRate)
+        
+        if AntiLag.LowQualityMode then
+            qualityLabel.Text = "⚡ Performance: Low"
+            qualityLabel.TextColor3 = Color3.fromRGB(255, 100, 0)
+        else
+            qualityLabel.Text = "⚡ Performance: High"
+            qualityLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+        end
+        
+        task.wait(1)
+    end
+end)
+
+-- ==============================================
+-- EVENT HANDLERS
+-- ==============================================
+
+closeBtn.MouseButton1Click:Connect(function()
+    if isContinuous then
+        isContinuous = false
+        if continuousConnection then
+            continuousConnection:Disconnect()
+            continuousConnection = nil
+        end
+    end
+    
+    screenGui:Destroy()
+    for id, pet in pairs(activePets) do
+        if pet and pet.Parent then
+            pcall(function() pet:Destroy() end)
+        end
+    end
+end)
+
+singleBtn.MouseButton1Click:Connect(function()
+    if isContinuous then
+        isContinuous = false
+        if continuousConnection then
+            continuousConnection:Disconnect()
+            continuousConnection = nil
+        end
+        continuousStatus.Text = "⏸ Continuous mode: OFF"
+        continuousStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+    
+    rainButton.Text = "☔ SINGLE RAIN ☔"
+    rainButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+end)
+
+continuousBtn.MouseButton1Click:Connect(function()
+    rainButton.Text = "☔ START RAIN ☔"
+    rainButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+end)
+
+rainButton.MouseButton1Click:Connect(function()
+    if rainButton.Text == "☔ SINGLE RAIN ☔" then
+        startSingleRain()
+    elseif rainButton.Text == "☔ START RAIN ☔" then
+        startContinuousRain()
+    elseif rainButton.Text == "☔ STOP RAIN ☔" then
+        startContinuousRain()
+    end
+end)
+
+clearButton.MouseButton1Click:Connect(clearAllPets)
+
+-- Unequip all on load
+task.spawn(function()
+    task.wait(1)
+    for _, wrapper in pairs(ClientData.get("pet_char_wrappers") or {}) do
+        pcall(function()
+            OriginalRouterGet("ToolAPI/Unequip"):InvokeServer(wrapper.pet_unique)
+        end)
+    end
+end)
+
+print("✅ 100 PETS/5 SECONDS + BURY CLOSEST PET LOADED!")
+print("📊 Total pets: " .. #AllPets)
+print("🪽 FR | 🌟 NFR | 🌈 MFR")
+print("🪦 Click brown button to bury closest pet 100 studs underground!")
